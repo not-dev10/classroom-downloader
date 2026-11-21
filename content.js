@@ -15,19 +15,18 @@
   const CHECKBOX_MARKER = 'data-cd-checkbox';
   const DOWNLOAD_BTN_MARKER = 'data-cd-download-btn';
 
-  // URL patterns supporting multi-account indices (/u/0/, /u/1/, etc.)
+  // Resilient URL patterns supporting multi-account indices (/u/0/, /u/1/, etc.)
   const PATTERNS = {
-    driveFile: /drive\.google\.com(?:\/u\/\d+)?\/file\/d\/([a-zA-Z0-9_-]+)/,
-    driveOpen: /drive\.google\.com(?:\/u\/\d+)?\/open\?.*id=([a-zA-Z0-9_-]+)/,
-    driveUc: /drive\.google\.com(?:\/u\/\d+)?\/uc\?.*id=([a-zA-Z0-9_-]+)/,
-    driveUsercontent: /drive\.usercontent\.google\.com\/download\?.*id=([a-zA-Z0-9_-]+)/,
-    googleDoc: /docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]+)/,
-    googleSheet: /docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
-    googleSlide: /docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]+)/,
-    googleDrawing: /docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]+)/,
-    googleForm: /docs\.google\.com(?:\/u\/\d+)?\/forms\/d\/([a-zA-Z0-9_-]+)/,
-    youtube: /(?:youtube\.com|youtu\.be)\//,
-    externalLink: /^https?:\/\//,
+    driveFile: /drive\.google\.com(?:\/u\/\d+)?\/(?:file\/d\/|open\?.*id=|uc\?.*id=)([a-zA-Z0-9_-]{15,})/i,
+    driveUsercontent: /drive\.usercontent\.google\.com\/download\?.*id=([a-zA-Z0-9_-]{15,})/i,
+    googleDoc: /docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]{15,})/i,
+    googleSheet: /docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]{15,})/i,
+    googleSlide: /docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]{15,})/i,
+    googleDrawing: /docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]{15,})/i,
+    googleForm: /docs\.google\.com(?:\/u\/\d+)?\/forms\/d\/([a-zA-Z0-9_-]{15,})/i,
+    youtube: /(?:youtube\.com|youtu\.be)\//i,
+    externalFile: /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|mp[34]|wav|avi|mov|mkv|csv|txt|rtf|odt|ods|odp)(?:\?|$)/i,
+    externalLink: /^https?:\/\//i,
   };
 
   // File type icons (SVG)
@@ -69,8 +68,10 @@
       pageInfo.type = 'classwork';
     } else if (path.match(/\/c\/[^/]+/)) {
       pageInfo.type = 'stream';
-    } else if (path.match(/\/u\/\d+\/h/) || path === '/') {
+    } else if (path.match(/\/u\/\d+\/?(?:h)?$/) || path === '/' || path === '') {
       pageInfo.type = 'home';
+    } else {
+      pageInfo.type = 'general';
     }
 
     // Try to get course name from page DOM
@@ -96,26 +97,49 @@
   }
 
   // --------------- Attachment Detection ---------------
-  function parseAttachmentLink(linkEl) {
-    const href = linkEl.href || linkEl.getAttribute('href') || '';
-    if (!href) return null;
+  function parseAttachmentElement(el) {
+    let rawHref = el.href || el.getAttribute('href') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-target-url') || '';
+
+    // If no href on element, check inner anchor
+    if (!rawHref) {
+      const innerA = el.querySelector('a[href]');
+      if (innerA) {
+        rawHref = innerA.href || innerA.getAttribute('href') || '';
+      }
+    }
+
+    // Check data-drive-id directly
+    const driveId = el.getAttribute('data-drive-id') || el.getAttribute('data-attachment-id') || el.getAttribute('data-id');
+    if (!rawHref && driveId && driveId.length >= 15) {
+      rawHref = `https://drive.google.com/file/d/${driveId}/view`;
+    }
+
+    if (!rawHref) return null;
+
+    // Unpack Google Redirects (e.g. https://www.google.com/url?q=https://drive.google.com/...)
+    let href = rawHref;
+    if (href.includes('google.com/url?') || href.includes('/url?')) {
+      try {
+        const parsed = new URL(href.startsWith('/') ? 'https://www.google.com' + href : href);
+        const target = parsed.searchParams.get('q') || parsed.searchParams.get('url');
+        if (target) href = target;
+      } catch {}
+    }
+
+    try {
+      href = decodeURIComponent(href);
+    } catch {}
 
     let type = null;
     let fileId = null;
     let match;
 
-    // Skip forms and YouTube
+    // Skip Google Forms and YouTube
     if (PATTERNS.googleForm.test(href) || PATTERNS.youtube.test(href)) {
       return null;
     }
 
     if ((match = href.match(PATTERNS.driveFile))) {
-      type = 'drive';
-      fileId = match[1];
-    } else if ((match = href.match(PATTERNS.driveOpen))) {
-      type = 'drive';
-      fileId = match[1];
-    } else if ((match = href.match(PATTERNS.driveUc))) {
       type = 'drive';
       fileId = match[1];
     } else if ((match = href.match(PATTERNS.driveUsercontent))) {
@@ -133,12 +157,11 @@
     } else if ((match = href.match(PATTERNS.googleDrawing))) {
       type = 'drawing';
       fileId = match[1];
-    } else if (PATTERNS.externalLink.test(href)) {
-      if (href.match(/\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|mp[34]|wav|avi|mov|mkv|csv|txt|rtf|odt|ods|odp)(\?|$)/i)) {
-        type = 'direct';
-      } else {
-        return null;
-      }
+    } else if (PATTERNS.externalFile.test(href)) {
+      type = 'direct';
+    } else if (driveId && driveId.length >= 15) {
+      type = 'drive';
+      fileId = driveId;
     } else {
       return null;
     }
@@ -146,15 +169,15 @@
     // Determine authuser
     let authuser = getActiveAuthUser();
     try {
-      const urlObj = new URL(href);
+      const urlObj = new URL(href.startsWith('http') ? href : 'https://' + href);
       const q = urlObj.searchParams.get('authuser');
       if (q) authuser = q;
       const m = urlObj.pathname.match(/\/u\/(\d+)\//);
       if (m) authuser = m[1];
     } catch {}
 
-    const fileName = extractFileName(linkEl, type);
-    const id = fileId || generateId();
+    const fileName = extractFileName(el, type);
+    const id = fileId || (href ? hashString(href) : generateId());
 
     return {
       id,
@@ -163,23 +186,31 @@
       url: href,
       fileName,
       authuser,
-      linkElement: linkEl,
+      linkElement: el,
     };
   }
 
-  function extractFileName(linkEl, type) {
+  function hashString(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return 'h_' + Math.abs(hash).toString(36);
+  }
+
+  function extractFileName(el, type) {
     let name = '';
 
-    // 1. Check aria-label of the link or card
-    const aria = linkEl.getAttribute('aria-label') || linkEl.title || '';
+    // 1. Check aria-label
+    const aria = el.getAttribute('aria-label') || el.title || '';
     if (aria) {
-      // Strip common prefixes like "Attachment: ", "File: "
       name = aria.replace(/^(?:Attachment:\s*|File:\s*|Open\s*)/i, '').trim();
     }
 
-    // 2. Look inside the attachment card element
+    // 2. Check inner card title elements
     if (!name) {
-      const card = linkEl.closest('[data-cd-card], [class*="material"], [class*="attachment"], div[role="listitem"], .QRiHXd, .e104Eb') || linkEl;
+      const card = el.closest('[data-cd-card], [class*="material"], [class*="attachment"], div[role="listitem"], .QRiHXd, .e104Eb') || el;
       if (card) {
         const titleEl = card.querySelector('[class*="title"], [class*="name"], .Z4BnXb, .yDSiEe, .rZXyKc, .A657be');
         if (titleEl) {
@@ -188,9 +219,9 @@
       }
     }
 
-    // 3. Look for text spans inside link
+    // 3. Spans inside the element
     if (!name) {
-      const spans = linkEl.querySelectorAll('span, div');
+      const spans = el.querySelectorAll('span, div');
       for (const s of spans) {
         const t = s.textContent?.trim();
         if (t && t.length > 2 && t.length < 150 && !t.includes('Google Drive') && !t.includes('Google Docs')) {
@@ -200,16 +231,17 @@
       }
     }
 
-    // 4. Link's direct text content
+    // 4. Fallback: textContent
     if (!name) {
-      name = linkEl.textContent?.trim()?.substring(0, 100) || '';
+      name = el.textContent?.trim()?.substring(0, 100) || '';
     }
 
-    // Clean up filename: remove multiple lines, extra spaces, and Google metadata
+    // Clean up filename
     name = name
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/\s+/g, ' ')
-      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|PDF|Word|PowerPoint|Excel)\b/gi, '')
+      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|Google Drawing|Google Forms|PDF|Word|PowerPoint|Excel)\b/gi, '')
+      .replace(/:\s*$/, '')
       .trim();
 
     if (!name || name.length < 2) {
@@ -233,7 +265,7 @@
 
     if (linkEl) {
       let container = linkEl.closest(
-        '[data-assignment-id], [data-coursework-id], [class*="assignment"], [class*="coursework"], [data-item-id], li[role="listitem"], article'
+        '[data-assignment-id], [data-coursework-id], [class*="assignment"], [class*="coursework"], [data-item-id], li[role="listitem"], article, .tLDEHd'
       );
 
       if (container) {
@@ -279,12 +311,12 @@
     };
   }
 
-  // --------------- UI Injection ---------------
-  function injectControls(linkEl, attachment) {
-    if (linkEl.getAttribute(MARKER)) return;
-    linkEl.setAttribute(MARKER, 'true');
+  // --------------- UI Controls Injection ---------------
+  function injectControls(el, attachment) {
+    if (el.getAttribute(MARKER)) return;
+    el.setAttribute(MARKER, 'true');
 
-    const card = linkEl.closest('a') || linkEl;
+    const card = el.closest('a') || el;
     const wrapper = card.parentElement || card;
 
     const style = window.getComputedStyle(wrapper);
@@ -342,12 +374,8 @@
     floatingBar.className = 'cd-floating-bar cd-hidden';
     floatingBar.innerHTML = `
       <div class="cd-floating-inner">
-        <button class="cd-fab-btn cd-select-all-btn" title="Select All">
-          Select All
-        </button>
-        <button class="cd-fab-btn cd-deselect-btn" title="Deselect All">
-          Deselect All
-        </button>
+        <button class="cd-fab-btn cd-select-all-btn" title="Select All">Select All</button>
+        <button class="cd-fab-btn cd-deselect-btn" title="Deselect All">Deselect All</button>
         <span class="cd-fab-count">Selected: 0</span>
         <button class="cd-fab-btn cd-fab-primary cd-download-selected-btn" title="Download Selected">
           ${ICONS.download} Download Selected
@@ -355,9 +383,7 @@
         <button class="cd-fab-btn cd-zip-selected-btn" title="Download as ZIP">
           ${ICONS.zip} ZIP
         </button>
-        <button class="cd-fab-btn cd-close-bar-btn" title="Close">
-          ${ICONS.close}
-        </button>
+        <button class="cd-fab-btn cd-close-bar-btn" title="Close">${ICONS.close}</button>
       </div>
     `;
 
@@ -439,8 +465,40 @@
 
     if (status === 'done' || status === 'error') {
       const header = progressOverlay.querySelector('.cd-progress-header h3');
-      header.textContent = status === 'done' ? 'Download Complete!' : 'Download Finished with Errors';
+      header.textContent = status === 'done' ? 'Download Complete!' : 'Finished with Errors';
     }
+  }
+
+  // --------------- Expand All Assignments Feature ---------------
+  // On the Classwork page, assignments are collapsed accordions by default.
+  // Expanding them forces Google Classroom to render attachment chips into the DOM.
+  function expandAllCoursework() {
+    let clicked = 0;
+    // Look for collapsed coursework buttons and rows
+    const candidates = document.querySelectorAll(
+      '[aria-expanded="false"], div[role="button"][jsaction*="click"], .tLDEHd, li[role="listitem"]'
+    );
+
+    candidates.forEach(el => {
+      if (el.getAttribute('aria-expanded') === 'false') {
+        el.click();
+        clicked++;
+      } else {
+        const btn = el.querySelector('[aria-expanded="false"]');
+        if (btn) {
+          btn.click();
+          clicked++;
+        }
+      }
+    });
+
+    showToast(`Expanded ${clicked} assignments. Scanning attachments...`, 'info');
+
+    // Rescan after DOM expansion
+    setTimeout(() => scanForAttachments(), 600);
+    setTimeout(() => scanForAttachments(), 1500);
+
+    return clicked;
   }
 
   // --------------- Actions ---------------
@@ -546,7 +604,7 @@
   function downloadAllOnPage() {
     const files = getAllFiles();
     if (files.length === 0) {
-      showToast('No downloadable files found', 'warning');
+      showToast('No downloadable files found. Click "Expand All" to open assignments.', 'warning');
       return;
     }
 
@@ -566,7 +624,7 @@
   function downloadAllAsZip() {
     const files = getAllFiles();
     if (files.length === 0) {
-      showToast('No downloadable files found', 'warning');
+      showToast('No downloadable files found. Click "Expand All" to open assignments.', 'warning');
       return;
     }
 
@@ -695,20 +753,20 @@
     }, 3200);
   }
 
-  // --------------- Scanner ---------------
+  // --------------- Resilient Scanner ---------------
   function scanForAttachments() {
     detectPageType();
 
     // Query links and attachment elements
-    const links = document.querySelectorAll(
-      'a[href*="drive.google.com"], a[href*="docs.google.com"], a[href*="drive.usercontent.google.com"], a[href]'
+    const elementsToScan = document.querySelectorAll(
+      'a[href], [data-url], [data-href], [data-drive-id], [data-attachment-id], [data-target-url], .QRiHXd, .e104Eb'
     );
     let newCount = 0;
 
-    links.forEach(link => {
-      if (link.getAttribute(MARKER)) return;
+    elementsToScan.forEach(el => {
+      if (el.getAttribute(MARKER)) return;
 
-      const attachment = parseAttachmentLink(link);
+      const attachment = parseAttachmentElement(el);
       if (attachment) {
         let isDuplicate = false;
         if (attachment.fileId) {
@@ -722,10 +780,10 @@
 
         if (!isDuplicate) {
           attachments.set(attachment.id, attachment);
-          injectControls(link, attachment);
+          injectControls(el, attachment);
           newCount++;
         } else {
-          link.setAttribute(MARKER, 'true');
+          el.setAttribute(MARKER, 'true');
         }
       }
     });
@@ -746,7 +804,10 @@
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (node.tagName === 'A' || node.querySelector?.('a[href]')) {
+              if (
+                node.tagName === 'A' ||
+                node.querySelector?.('a[href], [data-drive-id], .QRiHXd')
+              ) {
                 shouldScan = true;
                 break;
               }
@@ -758,7 +819,7 @@
 
       if (shouldScan) {
         clearTimeout(timer);
-        timer = setTimeout(() => scanForAttachments(), 350);
+        timer = setTimeout(() => scanForAttachments(), 300);
       }
     });
 
@@ -776,7 +837,7 @@
         setTimeout(() => {
           detectPageType();
           scanForAttachments();
-        }, 1200);
+        }, 1000);
       }
     };
 
@@ -819,6 +880,11 @@
         case 'toggleFileSelect':
           toggleFileSelection(message.fileId, message.selected);
           sendResponse({ success: true, selectedCount: selectedFiles.size });
+          return false;
+
+        case 'triggerExpandAll':
+          const expandedCount = expandAllCoursework();
+          sendResponse({ success: true, expandedCount });
           return false;
 
         case 'triggerDownloadAll':
@@ -865,7 +931,7 @@
           fetchFileInTab(message.file)
             .then(dataUrl => sendResponse({ success: true, dataUrl }))
             .catch(err => sendResponse({ success: false, error: err.message }));
-          return true; // async
+          return true;
 
         case 'scanPage':
           const count = scanForAttachments();
@@ -891,10 +957,16 @@
     setupUrlWatcher();
     setupMessageListener();
 
-    setTimeout(() => scanForAttachments(), 1500);
-    setTimeout(() => scanForAttachments(), 4000);
+    // Re-scans for asynchronously rendered SPA components
+    setTimeout(() => scanForAttachments(), 1000);
+    setTimeout(() => scanForAttachments(), 2500);
+    setTimeout(() => scanForAttachments(), 5000);
 
-    console.log('[Classroom Downloader] Initialized — found', attachments.size, 'attachments');
+    // Also scan on user scroll
+    window.addEventListener('scroll', () => {
+      clearTimeout(init._scrollTimer);
+      init._scrollTimer = setTimeout(() => scanForAttachments(), 400);
+    }, { passive: true });
   }
 
   if (document.readyState === 'loading') {

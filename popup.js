@@ -15,14 +15,19 @@
     pageType: $('#pageType'),
     classroomContent: $('#classroomContent'),
     notClassroom: $('#notClassroom'),
+    homeNotice: $('#homeNotice'),
     tabFilesBadge: $('#tabFilesBadge'),
     fileSearchInput: $('#fileSearchInput'),
     searchClearBtn: $('#searchClearBtn'),
     popupSelectAll: $('#popupSelectAll'),
     popupDeselectAll: $('#popupDeselectAll'),
+    expandAllBtn: $('#expandAllBtn'),
+    emptyExpandBtn: $('#emptyExpandBtn'),
     selectedStats: $('#selectedStats'),
     filesList: $('#filesList'),
     filesEmptyState: $('#filesEmptyState'),
+    emptyStateTitle: $('#emptyStateTitle'),
+    emptyStateTip: $('#emptyStateTip'),
     downloadActionBtn: $('#downloadActionBtn'),
     downloadActionText: $('#downloadActionText'),
     zipActionBtn: $('#zipActionBtn'),
@@ -41,6 +46,7 @@
   let isClassroom = false;
   let attachmentsList = [];
   let filterQuery = '';
+  let currentPageType = '';
 
   // --------------- Init ---------------
   async function init() {
@@ -99,15 +105,23 @@
     elements.courseName.textContent = name;
     elements.courseChip.textContent = name.length > 18 ? name.substring(0, 16) + '...' : name;
 
+    currentPageType = pageInfo?.type || 'unknown';
     const pageTypes = {
       stream: 'Stream',
       classwork: 'Classwork',
       assignment: 'Assignment',
       material: 'Material',
-      home: 'Home',
+      home: 'Dashboard',
       unknown: 'Classroom',
     };
-    elements.pageType.textContent = pageTypes[pageInfo?.type] || 'Classwork';
+    elements.pageType.textContent = pageTypes[currentPageType] || 'Classwork';
+
+    // Show home notice if on dashboard
+    if (currentPageType === 'home') {
+      elements.homeNotice.classList.remove('cd-hidden');
+    } else {
+      elements.homeNotice.classList.add('cd-hidden');
+    }
 
     // Attachments list
     attachmentsList = attachments || [];
@@ -131,13 +145,41 @@
     });
 
     if (filtered.length === 0) {
+      let emptyTitle = 'No materials detected on this page';
+      let emptyTip = 'Open an assignment or click into the Classwork tab to find attachments.';
+
+      if (filterQuery) {
+        emptyTitle = 'No materials match your search';
+        emptyTip = 'Try another keyword or clear the search filter.';
+      } else if (currentPageType === 'home') {
+        emptyTitle = 'Classes Dashboard';
+        emptyTip = 'You are currently viewing all your classes. Click into a course to download its files.';
+      } else if (currentPageType === 'classwork') {
+        emptyTitle = 'Assignments May Be Collapsed';
+        emptyTip = 'Click "Expand All Assignments" below to open coursework accordions and reveal attachments.';
+      }
+
       elements.filesList.innerHTML = `
         <div class="cd-empty-state">
           <div class="cd-empty-icon">${filterQuery ? '🔍' : '📂'}</div>
-          <p>${filterQuery ? 'No materials match your search.' : 'No downloadable materials detected on this page.'}</p>
-          <span class="cd-empty-tip">${filterQuery ? 'Try another keyword.' : 'Expand an assignment or navigate to the Classwork tab.'}</span>
+          <p>${emptyTitle}</p>
+          <span class="cd-empty-tip">${emptyTip}</span>
+          ${currentPageType !== 'home' && !filterQuery ? `
+            <div class="cd-empty-actions">
+              <button class="cd-btn cd-btn-primary cd-btn-sm" id="emptyExpandBtn">
+                📂 Expand All Assignments
+              </button>
+              <button class="cd-btn cd-btn-outline cd-btn-sm" id="emptyRescanBtn">
+                🔍 Rescan
+              </button>
+            </div>
+          ` : ''}
         </div>
       `;
+
+      // Re-attach empty state action buttons
+      $('#emptyExpandBtn')?.addEventListener('click', handleExpandAll);
+      $('#emptyRescanBtn')?.addEventListener('click', handleRescan);
       return;
     }
 
@@ -207,7 +249,7 @@
       case 'drive':
         return { label: 'Drive File', icon: '📄' };
       default:
-        return { label: 'File', icon: '📎' };
+        return { label: 'Attachment', icon: '📎' };
     }
   }
 
@@ -275,6 +317,42 @@
     }
   }
 
+  // --------------- Expand All Action ---------------
+  async function handleExpandAll() {
+    if (!isClassroom || !currentTabId) return;
+    elements.expandAllBtn.textContent = '⏳ Expanding...';
+
+    try {
+      const res = await chrome.tabs.sendMessage(currentTabId, { action: 'triggerExpandAll' });
+      setTimeout(async () => {
+        const info = await chrome.tabs.sendMessage(currentTabId, { action: 'getPageInfo' });
+        if (info) {
+          updateView(info);
+        }
+        elements.expandAllBtn.textContent = '📂 Expand All';
+      }, 1000);
+    } catch {
+      elements.expandAllBtn.textContent = '📂 Expand All';
+    }
+  }
+
+  // --------------- Rescan Page Action ---------------
+  async function handleRescan() {
+    if (!isClassroom || !currentTabId) return;
+    elements.scanBtn.textContent = 'Scanning...';
+
+    try {
+      const response = await chrome.tabs.sendMessage(currentTabId, { action: 'scanPage' });
+      if (response) {
+        attachmentsList = response.attachments || [];
+        elements.tabFilesBadge.textContent = attachmentsList.length;
+        renderFilesList();
+        updateSelectionUI();
+      }
+    } catch {}
+    elements.scanBtn.textContent = '🔍 Rescan';
+  }
+
   // --------------- Event Listeners ---------------
   function setupEventListeners() {
     // Search input
@@ -290,6 +368,10 @@
       elements.searchClearBtn.classList.add('cd-hidden');
       renderFilesList();
     });
+
+    // Expand All Buttons
+    elements.expandAllBtn?.addEventListener('click', handleExpandAll);
+    elements.emptyExpandBtn?.addEventListener('click', handleExpandAll);
 
     // Select All
     elements.popupSelectAll.addEventListener('click', () => {
@@ -332,21 +414,6 @@
     });
 
     // Rescan Page Button
-    const handleRescan = async () => {
-      if (!isClassroom || !currentTabId) return;
-      try {
-        elements.scanBtn.textContent = 'Scanning...';
-        const response = await chrome.tabs.sendMessage(currentTabId, { action: 'scanPage' });
-        if (response) {
-          attachmentsList = response.attachments || [];
-          elements.tabFilesBadge.textContent = attachmentsList.length;
-          renderFilesList();
-          updateSelectionUI();
-        }
-      } catch {}
-      elements.scanBtn.textContent = '🔍 Rescan';
-    };
-
     elements.scanBtn.addEventListener('click', handleRescan);
     elements.emptyRescanBtn?.addEventListener('click', handleRescan);
 

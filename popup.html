@@ -49,6 +49,15 @@
         </div>
       </section>
 
+      <!-- Classroom Home Notice (Shown if user is on /u/1/ or /u/1/h) -->
+      <div class="cd-home-notice cd-hidden" id="homeNotice">
+        <div class="cd-notice-icon">💡</div>
+        <div class="cd-notice-text">
+          <strong>You are on the Classes Dashboard.</strong>
+          <span>Click into any course or its <em>Classwork</em> tab to view and download materials.</span>
+        </div>
+      </div>
+
       <!-- Tabs Navigation -->
       <div class="cd-tabs">
         <button class="cd-tab cd-tab-active" data-tab="files" id="tabFiles">
@@ -74,6 +83,10 @@
             <button class="cd-text-btn" id="popupSelectAll">Select All</button>
             <span class="cd-dot-separator">•</span>
             <button class="cd-text-btn" id="popupDeselectAll">Deselect All</button>
+            <span class="cd-dot-separator">•</span>
+            <button class="cd-text-btn cd-highlight-btn" id="expandAllBtn" title="Click to open all collapsed assignments in Classwork">
+              📂 Expand All
+            </button>
             <span class="cd-selected-stats" id="selectedStats">0 selected</span>
           </div>
         </div>
@@ -82,9 +95,18 @@
         <div class="cd-files-list" id="filesList">
           <div class="cd-empty-state" id="filesEmptyState">
             <div class="cd-empty-icon">📂</div>
-            <p>Scanning for classroom attachments...</p>
-            <span class="cd-empty-tip">Open a Classwork topic or Assignment page to see files.</span>
-            <button class="cd-btn cd-btn-outline cd-btn-sm" id="emptyRescanBtn">Rescan Page</button>
+            <p id="emptyStateTitle">No materials detected yet</p>
+            <span class="cd-empty-tip" id="emptyStateTip">
+              Assignments on the Classwork page may be collapsed. Click <strong>Expand All</strong> below to reveal all attachments.
+            </span>
+            <div class="cd-empty-actions">
+              <button class="cd-btn cd-btn-primary cd-btn-sm" id="emptyExpandBtn">
+                📂 Expand All Assignments
+              </button>
+              <button class="cd-btn cd-btn-outline cd-btn-sm" id="emptyRescanBtn">
+                🔍 Rescan
+              </button>
+            </div>
           </div>
         </div>
 
