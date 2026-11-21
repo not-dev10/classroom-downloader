@@ -319,17 +319,19 @@ async function fetchFileBlob(file) {
     initialUrl = `${initialUrl}${sep}authuser=${authuser}`;
   }
 
+  console.log(`[Classroom Downloader ServiceWorker] 🚀 Fetching: "${file.fileName}"`, { url: initialUrl, authuser, type: file.type });
+
   let response = await fetch(initialUrl, {
     credentials: 'include',
     headers: { 'Accept': '*/*' },
   });
 
+  let contentType = (response.headers.get('content-type') || '').toLowerCase();
+  console.log(`[Classroom Downloader ServiceWorker] 📥 Initial response: HTTP ${response.status}, Content-Type: ${contentType}`);
+
   if (!response.ok && response.status !== 200) {
-    // If request failed with 403 or 401, check if authuser is required
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
-
-  let contentType = (response.headers.get('content-type') || '').toLowerCase();
 
   // If response is HTML, Google Drive may be showing the "virus scan warning / confirm download" page
   if (contentType.includes('text/html')) {
@@ -450,9 +452,12 @@ async function downloadFile(file, tabId) {
   const fileName = buildFileName(file);
   const downloadIdKey = file.id || generateId();
 
+  console.log(`[Classroom Downloader ServiceWorker] 💾 Processing download: "${fileName}" (ID: ${downloadIdKey})`);
+
   try {
     // 1. Fetch the real binary blob
     const blob = await fetchFileBlobWithFallback(file, tabId);
+    console.log(`[Classroom Downloader ServiceWorker] 📦 Blob received: ${blob.size} bytes, type: ${blob.type}`);
 
     // 2. Convert blob to Data URL to bypass Chrome's unauthenticated download manager
     const dataUrl = await blobToDataUrl(blob);
@@ -468,6 +473,7 @@ async function downloadFile(file, tabId) {
         (downloadId) => {
           if (chrome.runtime.lastError) {
             const error = chrome.runtime.lastError.message;
+            console.error(`[Classroom Downloader ServiceWorker] ❌ chrome.downloads.download error:`, error);
             addToHistory({
               id: downloadIdKey,
               fileName: file.fileName,
@@ -480,6 +486,7 @@ async function downloadFile(file, tabId) {
             });
             reject(new Error(error));
           } else {
+            console.log(`[Classroom Downloader ServiceWorker] ✅ Download triggered successfully (ID: ${downloadId})`);
             addToHistory({
               id: downloadIdKey,
               fileName: file.fileName,
@@ -496,6 +503,7 @@ async function downloadFile(file, tabId) {
       );
     });
   } catch (error) {
+    console.error(`[Classroom Downloader ServiceWorker] ❌ Failed to download "${file.fileName}":`, error.message);
     addToHistory({
       id: downloadIdKey,
       fileName: file.fileName,

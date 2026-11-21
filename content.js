@@ -15,18 +15,19 @@
   const CHECKBOX_MARKER = 'data-cd-checkbox';
   const DOWNLOAD_BTN_MARKER = 'data-cd-download-btn';
 
-  // Resilient URL patterns supporting multi-account indices (/u/0/, /u/1/, etc.)
+  // URL patterns for detecting file types (supporting /u/0/, /u/1/, etc.)
   const PATTERNS = {
-    driveFile: /drive\.google\.com(?:\/u\/\d+)?\/(?:file\/d\/|open\?.*id=|uc\?.*id=)([a-zA-Z0-9_-]{15,})/i,
-    driveUsercontent: /drive\.usercontent\.google\.com\/download\?.*id=([a-zA-Z0-9_-]{15,})/i,
-    googleDoc: /docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]{15,})/i,
-    googleSheet: /docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]{15,})/i,
-    googleSlide: /docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]{15,})/i,
-    googleDrawing: /docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]{15,})/i,
-    googleForm: /docs\.google\.com(?:\/u\/\d+)?\/forms\/d\/([a-zA-Z0-9_-]{15,})/i,
-    youtube: /(?:youtube\.com|youtu\.be)\//i,
-    externalFile: /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|mp[34]|wav|avi|mov|mkv|csv|txt|rtf|odt|ods|odp)(?:\?|$)/i,
-    externalLink: /^https?:\/\//i,
+    driveFile: /drive\.google\.com(?:\/u\/\d+)?\/file\/d\/([a-zA-Z0-9_-]+)/,
+    driveOpen: /drive\.google\.com(?:\/u\/\d+)?\/open\?.*id=([a-zA-Z0-9_-]+)/,
+    driveUc: /drive\.google\.com(?:\/u\/\d+)?\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+    driveUsercontent: /drive\.usercontent\.google\.com\/download\?.*id=([a-zA-Z0-9_-]+)/,
+    googleDoc: /docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]+)/,
+    googleSheet: /docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
+    googleSlide: /docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]+)/,
+    googleDrawing: /docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]+)/,
+    googleForm: /docs\.google\.com(?:\/u\/\d+)?\/forms\/d\/([a-zA-Z0-9_-]+)/,
+    youtube: /(?:youtube\.com|youtu\.be)\//,
+    externalLink: /^https?:\/\//,
   };
 
   // File type icons (SVG)
@@ -44,8 +45,8 @@
   let progressOverlay = null;
   let pageInfo = { type: 'unknown', courseName: '', topicName: '', assignmentName: '' };
 
-  // --------------- Multi-Account Auth Detection ---------------
-  function getActiveAuthUser() {
+  // --------------- Auth User ---------------
+  function getAuthUser() {
     try {
       const uMatch = window.location.pathname.match(/\/u\/(\d+)\//);
       if (uMatch) return uMatch[1];
@@ -70,11 +71,9 @@
       pageInfo.type = 'stream';
     } else if (path.match(/\/u\/\d+\/?(?:h)?$/) || path === '/' || path === '') {
       pageInfo.type = 'home';
-    } else {
-      pageInfo.type = 'general';
     }
 
-    // Try to get course name from page DOM
+    // Try to get course name from page
     const titleEl = document.querySelector(
       '[data-course-name], .VHRMwb, h1, [role="heading"][aria-level="1"], .A657be'
     );
@@ -85,7 +84,7 @@
       }
     }
 
-    // Fallback: document title
+    // Fallback: use document title
     if (!pageInfo.courseName) {
       const title = document.title.replace(' - Google Classroom', '').trim();
       if (title && title !== 'Google Classroom') {
@@ -97,49 +96,35 @@
   }
 
   // --------------- Attachment Detection ---------------
-  function parseAttachmentElement(el) {
-    let rawHref = el.href || el.getAttribute('href') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-target-url') || '';
+  function parseAttachmentLink(linkEl) {
+    let href = linkEl.href || linkEl.getAttribute('href') || '';
+    if (!href) return null;
 
-    // If no href on element, check inner anchor
-    if (!rawHref) {
-      const innerA = el.querySelector('a[href]');
-      if (innerA) {
-        rawHref = innerA.href || innerA.getAttribute('href') || '';
-      }
-    }
-
-    // Check data-drive-id directly
-    const driveId = el.getAttribute('data-drive-id') || el.getAttribute('data-attachment-id') || el.getAttribute('data-id');
-    if (!rawHref && driveId && driveId.length >= 15) {
-      rawHref = `https://drive.google.com/file/d/${driveId}/view`;
-    }
-
-    if (!rawHref) return null;
-
-    // Unpack Google Redirects (e.g. https://www.google.com/url?q=https://drive.google.com/...)
-    let href = rawHref;
+    // Unpack Google Redirects if present
     if (href.includes('google.com/url?') || href.includes('/url?')) {
       try {
-        const parsed = new URL(href.startsWith('/') ? 'https://www.google.com' + href : href);
-        const target = parsed.searchParams.get('q') || parsed.searchParams.get('url');
-        if (target) href = target;
+        const u = new URL(href.startsWith('/') ? 'https://www.google.com' + href : href);
+        const q = u.searchParams.get('q') || u.searchParams.get('url');
+        if (q) href = q;
       } catch {}
     }
-
-    try {
-      href = decodeURIComponent(href);
-    } catch {}
 
     let type = null;
     let fileId = null;
     let match;
 
-    // Skip Google Forms and YouTube
+    // Skip forms and YouTube
     if (PATTERNS.googleForm.test(href) || PATTERNS.youtube.test(href)) {
       return null;
     }
 
     if ((match = href.match(PATTERNS.driveFile))) {
+      type = 'drive';
+      fileId = match[1];
+    } else if ((match = href.match(PATTERNS.driveOpen))) {
+      type = 'drive';
+      fileId = match[1];
+    } else if ((match = href.match(PATTERNS.driveUc))) {
       type = 'drive';
       fileId = match[1];
     } else if ((match = href.match(PATTERNS.driveUsercontent))) {
@@ -157,27 +142,28 @@
     } else if ((match = href.match(PATTERNS.googleDrawing))) {
       type = 'drawing';
       fileId = match[1];
-    } else if (PATTERNS.externalFile.test(href)) {
-      type = 'direct';
-    } else if (driveId && driveId.length >= 15) {
-      type = 'drive';
-      fileId = driveId;
+    } else if (PATTERNS.externalLink.test(href)) {
+      if (href.match(/\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|mp[34]|wav|avi|mov|mkv|csv|txt|rtf|odt|ods|odp)(\?|$)/i)) {
+        type = 'direct';
+      } else {
+        return null;
+      }
     } else {
       return null;
     }
 
     // Determine authuser
-    let authuser = getActiveAuthUser();
+    let authuser = getAuthUser();
     try {
-      const urlObj = new URL(href.startsWith('http') ? href : 'https://' + href);
-      const q = urlObj.searchParams.get('authuser');
+      const uObj = new URL(href.startsWith('http') ? href : 'https://' + href);
+      const q = uObj.searchParams.get('authuser');
       if (q) authuser = q;
-      const m = urlObj.pathname.match(/\/u\/(\d+)\//);
+      const m = uObj.pathname.match(/\/u\/(\d+)\//);
       if (m) authuser = m[1];
     } catch {}
 
-    const fileName = extractFileName(el, type);
-    const id = fileId || (href ? hashString(href) : generateId());
+    const fileName = extractFileName(linkEl, type);
+    const id = fileId || generateId();
 
     return {
       id,
@@ -186,61 +172,52 @@
       url: href,
       fileName,
       authuser,
-      linkElement: el,
+      linkElement: linkEl,
     };
   }
 
-  function hashString(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash |= 0;
-    }
-    return 'h_' + Math.abs(hash).toString(36);
-  }
-
-  function extractFileName(el, type) {
+  function extractFileName(linkEl, type) {
     let name = '';
 
-    // 1. Check aria-label
-    const aria = el.getAttribute('aria-label') || el.title || '';
+    // Check aria-label
+    const aria = linkEl.getAttribute('aria-label') || linkEl.title || '';
     if (aria) {
       name = aria.replace(/^(?:Attachment:\s*|File:\s*|Open\s*)/i, '').trim();
     }
 
-    // 2. Check inner card title elements
+    // Look for text content in the attachment card
     if (!name) {
-      const card = el.closest('[data-cd-card], [class*="material"], [class*="attachment"], div[role="listitem"], .QRiHXd, .e104Eb') || el;
+      const card = linkEl.closest('[data-cd-card], [class*="material"], [class*="attachment"], div[role="listitem"], .QRiHXd, .e104Eb') || linkEl;
       if (card) {
-        const titleEl = card.querySelector('[class*="title"], [class*="name"], .Z4BnXb, .yDSiEe, .rZXyKc, .A657be');
+        const titleEl = card.querySelector(
+          '[class*="title"], [class*="name"], .Z4BnXb, .yDSiEe, .rZXyKc, .A657be'
+        );
         if (titleEl) {
-          name = titleEl.textContent?.trim() || '';
+          name = titleEl.textContent?.trim();
         }
       }
     }
 
-    // 3. Spans inside the element
     if (!name) {
-      const spans = el.querySelectorAll('span, div');
-      for (const s of spans) {
-        const t = s.textContent?.trim();
-        if (t && t.length > 2 && t.length < 150 && !t.includes('Google Drive') && !t.includes('Google Docs')) {
+      const textNodes = linkEl.querySelectorAll('span, div');
+      for (const node of textNodes) {
+        const t = node.textContent?.trim();
+        if (t && t.length > 2 && t.length < 200 && !t.includes('Google Drive') && !t.includes('Google Docs')) {
           name = t;
           break;
         }
       }
     }
 
-    // 4. Fallback: textContent
     if (!name) {
-      name = el.textContent?.trim()?.substring(0, 100) || '';
+      name = linkEl.textContent?.trim()?.substring(0, 100) || '';
     }
 
-    // Clean up filename
+    // Clean up name
     name = name
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/\s+/g, ' ')
-      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|Google Drawing|Google Forms|PDF|Word|PowerPoint|Excel)\b/gi, '')
+      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|PDF|Word|PowerPoint|Excel)\b/gi, '')
       .replace(/:\s*$/, '')
       .trim();
 
@@ -265,7 +242,7 @@
 
     if (linkEl) {
       let container = linkEl.closest(
-        '[data-assignment-id], [data-coursework-id], [class*="assignment"], [class*="coursework"], [data-item-id], li[role="listitem"], article, .tLDEHd'
+        '[data-assignment-id], [data-coursework-id], [class*="assignment"], [class*="coursework"], [data-item-id], li, article, .tLDEHd'
       );
 
       if (container) {
@@ -281,7 +258,7 @@
         }
       }
 
-      // Topic detection
+      // Try to find topic
       let topicContainer = linkEl.closest('[data-topic-id]');
       if (!topicContainer) {
         let el = container || linkEl;
@@ -311,12 +288,12 @@
     };
   }
 
-  // --------------- UI Controls Injection ---------------
-  function injectControls(el, attachment) {
-    if (el.getAttribute(MARKER)) return;
-    el.setAttribute(MARKER, 'true');
+  // --------------- UI Injection ---------------
+  function injectControls(linkEl, attachment) {
+    if (linkEl.getAttribute(MARKER)) return;
+    linkEl.setAttribute(MARKER, 'true');
 
-    const card = el.closest('a') || el;
+    const card = linkEl.closest('a') || linkEl;
     const wrapper = card.parentElement || card;
 
     const style = window.getComputedStyle(wrapper);
@@ -470,35 +447,28 @@
   }
 
   // --------------- Expand All Assignments Feature ---------------
-  // On the Classwork page, assignments are collapsed accordions by default.
-  // Expanding them forces Google Classroom to render attachment chips into the DOM.
   function expandAllCoursework() {
-    let clicked = 0;
-    // Look for collapsed coursework buttons and rows
-    const candidates = document.querySelectorAll(
+    let count = 0;
+    const buttons = document.querySelectorAll(
       '[aria-expanded="false"], div[role="button"][jsaction*="click"], .tLDEHd, li[role="listitem"]'
     );
-
-    candidates.forEach(el => {
+    buttons.forEach(el => {
       if (el.getAttribute('aria-expanded') === 'false') {
         el.click();
-        clicked++;
+        count++;
       } else {
-        const btn = el.querySelector('[aria-expanded="false"]');
-        if (btn) {
-          btn.click();
-          clicked++;
+        const inner = el.querySelector('[aria-expanded="false"]');
+        if (inner) {
+          inner.click();
+          count++;
         }
       }
     });
 
-    showToast(`Expanded ${clicked} assignments. Scanning attachments...`, 'info');
-
-    // Rescan after DOM expansion
+    showToast(`Expanded ${count} coursework items. Scanning...`, 'info');
     setTimeout(() => scanForAttachments(), 600);
     setTimeout(() => scanForAttachments(), 1500);
-
-    return clicked;
+    return count;
   }
 
   // --------------- Actions ---------------
@@ -536,7 +506,7 @@
       fileId: attachment.fileId,
       url: attachment.url,
       fileName: attachment.fileName,
-      authuser: attachment.authuser || getActiveAuthUser(),
+      authuser: attachment.authuser || getAuthUser(),
       folderPath: buildFolderPath(context),
     };
 
@@ -604,7 +574,7 @@
   function downloadAllOnPage() {
     const files = getAllFiles();
     if (files.length === 0) {
-      showToast('No downloadable files found. Click "Expand All" to open assignments.', 'warning');
+      showToast('No downloadable files found', 'warning');
       return;
     }
 
@@ -624,7 +594,7 @@
   function downloadAllAsZip() {
     const files = getAllFiles();
     if (files.length === 0) {
-      showToast('No downloadable files found. Click "Expand All" to open assignments.', 'warning');
+      showToast('No downloadable files found', 'warning');
       return;
     }
 
@@ -661,7 +631,7 @@
           fileId: att.fileId,
           url: att.url,
           fileName: att.fileName,
-          authuser: att.authuser || getActiveAuthUser(),
+          authuser: att.authuser || getAuthUser(),
           folderPath: buildFolderPath(context),
           assignmentName: context.assignmentName,
           topicName: context.topicName,
@@ -682,7 +652,7 @@
         fileId: att.fileId,
         url: att.url,
         fileName: att.fileName,
-        authuser: att.authuser || getActiveAuthUser(),
+        authuser: att.authuser || getAuthUser(),
         folderPath: buildFolderPath(context),
         assignmentName: context.assignmentName,
         topicName: context.topicName,
@@ -711,7 +681,7 @@
 
   // --------------- In-Tab Fetch Handler ---------------
   async function fetchFileInTab(file) {
-    const authuser = file.authuser || getActiveAuthUser();
+    const authuser = file.authuser || getAuthUser();
     let url = file.url;
 
     if (file.type === 'drive' && file.fileId) {
@@ -749,29 +719,28 @@
 
     setTimeout(() => {
       toast.classList.remove('cd-toast-visible');
-      setTimeout(() => toast.remove(), 300);
+      setTimeout(() => toast.remove(), 3200);
     }, 3200);
   }
 
-  // --------------- Resilient Scanner ---------------
+  // --------------- Scanner (Original reliable approach with rich logging) ---------------
   function scanForAttachments() {
     detectPageType();
 
-    // Query links and attachment elements
-    const elementsToScan = document.querySelectorAll(
-      'a[href], [data-url], [data-href], [data-drive-id], [data-attachment-id], [data-target-url], .QRiHXd, .e104Eb'
-    );
+    // Query all anchors on the page
+    const links = document.querySelectorAll('a[href]');
     let newCount = 0;
+    const detectedThisPass = [];
 
-    elementsToScan.forEach(el => {
-      if (el.getAttribute(MARKER)) return;
+    links.forEach(link => {
+      if (link.getAttribute(MARKER)) return;
 
-      const attachment = parseAttachmentElement(el);
+      const attachment = parseAttachmentLink(link);
       if (attachment) {
         let isDuplicate = false;
         if (attachment.fileId) {
           for (const [existingId, existing] of attachments) {
-            if (existing.fileId === attachment.fileId) {
+            if (existing.fileId === attachment.fileId && existing.url === attachment.url) {
               isDuplicate = true;
               break;
             }
@@ -780,15 +749,23 @@
 
         if (!isDuplicate) {
           attachments.set(attachment.id, attachment);
-          injectControls(el, attachment);
+          injectControls(link, attachment);
           newCount++;
+          detectedThisPass.push({
+            name: attachment.fileName,
+            type: attachment.type,
+            fileId: attachment.fileId,
+            url: attachment.url,
+            authuser: attachment.authuser,
+          });
         } else {
-          el.setAttribute(MARKER, 'true');
+          link.setAttribute(MARKER, 'true');
         }
       }
     });
 
     if (newCount > 0) {
+      console.log(`[Classroom Downloader] ✅ Found ${newCount} new attachment(s) on page (Total detected: ${attachments.size}):`, detectedThisPass);
       updateFloatingBar();
     }
 
@@ -804,10 +781,7 @@
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (
-                node.tagName === 'A' ||
-                node.querySelector?.('a[href], [data-drive-id], .QRiHXd')
-              ) {
+              if (node.tagName === 'A' || node.querySelector?.('a[href]')) {
                 shouldScan = true;
                 break;
               }
@@ -837,7 +811,7 @@
         setTimeout(() => {
           detectPageType();
           scanForAttachments();
-        }, 1000);
+        }, 1200);
       }
     };
 
@@ -883,8 +857,8 @@
           return false;
 
         case 'triggerExpandAll':
-          const expandedCount = expandAllCoursework();
-          sendResponse({ success: true, expandedCount });
+          const count = expandAllCoursework();
+          sendResponse({ success: true, count });
           return false;
 
         case 'triggerDownloadAll':
@@ -934,9 +908,9 @@
           return true;
 
         case 'scanPage':
-          const count = scanForAttachments();
+          const newCnt = scanForAttachments();
           sendResponse({
-            newAttachments: count,
+            newAttachments: newCnt,
             totalAttachments: attachments.size,
             attachments: getAllFiles(),
           });
