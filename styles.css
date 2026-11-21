@@ -1,0 +1,376 @@
+/* ============================================================
+   Classroom Downloader — Injected Styles
+   ============================================================ */
+
+/* --------------- CSS Variables --------------- */
+:root {
+  --cd-primary: #1a73e8;
+  --cd-primary-hover: #1557b0;
+  --cd-primary-light: rgba(26, 115, 232, 0.08);
+  --cd-success: #34a853;
+  --cd-warning: #f9ab00;
+  --cd-error: #ea4335;
+  --cd-bg: #ffffff;
+  --cd-bg-elevated: #ffffff;
+  --cd-text: #202124;
+  --cd-text-secondary: #5f6368;
+  --cd-border: #dadce0;
+  --cd-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  --cd-shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.16);
+  --cd-radius: 8px;
+  --cd-radius-sm: 4px;
+  --cd-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Dark theme */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cd-primary: #8ab4f8;
+    --cd-primary-hover: #aecbfa;
+    --cd-primary-light: rgba(138, 180, 248, 0.12);
+    --cd-bg: #202124;
+    --cd-bg-elevated: #292a2d;
+    --cd-text: #e8eaed;
+    --cd-text-secondary: #9aa0a6;
+    --cd-border: #3c4043;
+    --cd-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    --cd-shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* --------------- Controls Container --------------- */
+.cd-controls {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 100;
+  opacity: 0;
+  transition: opacity var(--cd-transition);
+  pointer-events: none;
+}
+
+*:hover > .cd-controls,
+.cd-controls:hover,
+.cd-controls:focus-within {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Show controls when checkbox is checked */
+.cd-controls:has(.cd-checkbox:checked) {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* --------------- Checkbox --------------- */
+.cd-checkbox-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  border-radius: var(--cd-radius-sm);
+  transition: background var(--cd-transition);
+}
+
+.cd-checkbox-wrapper:hover {
+  background: var(--cd-primary-light);
+}
+
+.cd-checkbox {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.cd-checkbox-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--cd-text-secondary);
+  border-radius: 3px;
+  transition: all var(--cd-transition);
+  background: transparent;
+}
+
+.cd-check-icon {
+  display: none;
+  color: white;
+}
+
+.cd-checkbox:checked + .cd-checkbox-visual {
+  background: var(--cd-primary);
+  border-color: var(--cd-primary);
+}
+
+.cd-checkbox:checked + .cd-checkbox-visual .cd-check-icon {
+  display: flex;
+}
+
+/* --------------- Download Button --------------- */
+.cd-download-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+  border-radius: var(--cd-radius-sm);
+  transition: all var(--cd-transition);
+  padding: 0;
+}
+
+.cd-download-btn:hover {
+  background: var(--cd-primary-light);
+  color: var(--cd-primary);
+}
+
+.cd-download-btn:active {
+  transform: scale(0.9);
+}
+
+/* --------------- Floating Action Bar --------------- */
+.cd-floating-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  z-index: 10001;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cd-floating-bar.cd-hidden {
+  transform: translateX(-50%) translateY(120px);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.cd-floating-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--cd-bg-elevated);
+  border-radius: 28px;
+  box-shadow: var(--cd-shadow-elevated);
+  border: 1px solid var(--cd-border);
+}
+
+.cd-fab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--cd-transition);
+  white-space: nowrap;
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+}
+
+.cd-fab-btn:not(.cd-fab-primary) {
+  background: transparent;
+  color: var(--cd-text-secondary);
+}
+
+.cd-fab-btn:not(.cd-fab-primary):hover {
+  background: var(--cd-primary-light);
+  color: var(--cd-primary);
+}
+
+.cd-fab-primary {
+  background: var(--cd-primary);
+  color: white;
+}
+
+.cd-fab-primary:hover {
+  background: var(--cd-primary-hover);
+  box-shadow: 0 1px 4px rgba(26, 115, 232, 0.4);
+}
+
+.cd-fab-count {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cd-primary);
+  background: var(--cd-primary-light);
+  border-radius: 16px;
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+}
+
+.cd-close-bar-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50% !important;
+}
+
+/* --------------- Progress Overlay --------------- */
+.cd-progress-overlay {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  z-index: 10002;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cd-progress-overlay.cd-hidden {
+  transform: translateY(20px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cd-progress-card {
+  width: 360px;
+  background: var(--cd-bg-elevated);
+  border-radius: var(--cd-radius);
+  box-shadow: var(--cd-shadow-elevated);
+  border: 1px solid var(--cd-border);
+  overflow: hidden;
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+}
+
+.cd-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--cd-border);
+}
+
+.cd-progress-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--cd-text);
+}
+
+.cd-progress-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--cd-text-secondary);
+  cursor: pointer;
+  border-radius: 50%;
+  transition: background var(--cd-transition);
+  padding: 0;
+}
+
+.cd-progress-close:hover {
+  background: var(--cd-primary-light);
+}
+
+.cd-progress-bar-container {
+  height: 4px;
+  background: var(--cd-primary-light);
+}
+
+.cd-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--cd-primary);
+  transition: width 0.4s ease;
+  border-radius: 0 2px 2px 0;
+}
+
+.cd-progress-info {
+  padding: 12px 16px 4px;
+}
+
+.cd-progress-status {
+  font-size: 13px;
+  color: var(--cd-text-secondary);
+}
+
+.cd-progress-counts {
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  font-size: 12px;
+}
+
+.cd-count-completed {
+  color: var(--cd-success);
+}
+
+.cd-count-failed {
+  color: var(--cd-error);
+}
+
+.cd-count-pending {
+  color: var(--cd-warning);
+}
+
+.cd-progress-current {
+  padding: 0 16px 12px;
+  font-size: 12px;
+  color: var(--cd-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------- Toast Notifications --------------- */
+.cd-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  padding: 12px 24px;
+  border-radius: var(--cd-radius);
+  font-size: 14px;
+  font-weight: 400;
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  z-index: 10003;
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: var(--cd-shadow);
+  max-width: 400px;
+}
+
+.cd-toast-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.cd-toast-info {
+  background: var(--cd-text);
+  color: var(--cd-bg);
+}
+
+.cd-toast-error {
+  background: var(--cd-error);
+  color: white;
+}
+
+.cd-toast-warning {
+  background: var(--cd-warning);
+  color: #202124;
+}
+
+.cd-toast-success {
+  background: var(--cd-success);
+  color: white;
+}
