@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   defaultBehavior: 'individual',    // 'individual' | 'zip'
   docExportFormat: 'pdf',           // pdf | docx
   sheetExportFormat: 'xlsx',        // xlsx | csv | pdf
-  slideExportFormat: 'pptx',       // pptx | pdf
+  slideExportFormat: 'pptx',        // pptx | pdf
   preserveFolders: true,
   skipDownloaded: false,
   showNotifications: true,
@@ -60,17 +60,16 @@ chrome.storage.local.get(['settings', 'downloadHistory'], (data) => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'classroom-download' && info.linkUrl) {
     const fileInfo = parseLinkUrl(info.linkUrl);
-    if (fileInfo) {
-      downloadFile(fileInfo);
-    } else {
-      // Try direct download
-      downloadFile({
-        url: info.linkUrl,
-        fileName: extractFileNameFromUrl(info.linkUrl),
-        type: 'direct',
-        id: generateId(),
-      });
-    }
+    const targetFile = fileInfo || {
+      url: info.linkUrl,
+      fileName: extractFileNameFromUrl(info.linkUrl),
+      type: 'direct',
+      id: generateId(),
+      authuser: '0',
+    };
+    downloadFile(targetFile, tab?.id).catch(err => {
+      console.error('Context menu download failed:', err);
+    });
   }
 });
 
@@ -110,13 +109,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       return false;
 
-    case 'getPageInfo':
-      // Forward to content script
-      if (sender.tab) {
-        sendResponse({ tabId: sender.tab.id });
-      }
-      return false;
-
     case 'retryDownload':
       const historyItem = state.downloadHistory.find(h => h.id === message.fileId);
       if (historyItem) {
@@ -126,7 +118,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type: historyItem.type,
           id: historyItem.id,
           fileId: historyItem.fileId,
-        });
+          authuser: historyItem.authuser || '0',
+        }, sender.tab?.id);
       }
       sendResponse({ success: true });
       return false;
@@ -139,9 +132,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // --------------- Download Handlers ---------------
 async function handleDownloadFile(message, sender, sendResponse) {
   try {
-    const result = await downloadFile(message.file);
+    const tabId = message.tabId || sender.tab?.id;
+    const result = await downloadFile(message.file, tabId);
     sendResponse({ success: true, result });
   } catch (error) {
+    console.error('Download error:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
@@ -149,7 +144,7 @@ async function handleDownloadFile(message, sender, sendResponse) {
 async function handleDownloadFiles(message, sender, sendResponse) {
   try {
     const files = message.files || [];
-    const tabId = sender.tab?.id;
+    const tabId = message.tabId || sender.tab?.id;
     let completed = 0;
     let failed = 0;
     const total = files.length;
@@ -183,7 +178,7 @@ async function handleDownloadFiles(message, sender, sendResponse) {
 async function handleDownloadAsZip(message, sender, sendResponse) {
   const files = message.files || [];
   const zipName = message.zipName || 'classroom-materials.zip';
-  const tabId = sender.tab?.id;
+  const tabId = message.tabId || sender.tab?.id;
 
   try {
     notifyProgress(tabId, {
@@ -191,30 +186,23 @@ async function handleDownloadAsZip(message, sender, sendResponse) {
       failed: 0,
       total: files.length,
       status: 'zipping',
-      message: 'Fetching files for ZIP...',
+      message: 'Fetching materials for ZIP archive...',
     });
 
-    // Fetch all files
     const fileData = [];
     let completed = 0;
     let failed = 0;
 
     for (const file of files) {
       try {
-        const url = getDownloadUrl(file);
-        const response = await fetch(url, { credentials: 'include' });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const blob = await response.blob();
+        const blob = await fetchFileBlobWithFallback(file, tabId);
         const arrayBuffer = await blob.arrayBuffer();
 
-        // Build path
-        let path = file.fileName || 'untitled';
+        // Build file name with proper extension
+        const finalName = buildFileName(file);
+        let path = finalName;
         if (message.preserveFolders && file.folderPath) {
-          path = file.folderPath + '/' + path;
+          path = sanitizePath(file.folderPath) + '/' + finalName;
         }
 
         fileData.push({ path, data: new Uint8Array(arrayBuffer) });
@@ -228,26 +216,25 @@ async function handleDownloadAsZip(message, sender, sendResponse) {
         });
       } catch (err) {
         failed++;
-        console.error(`Failed to fetch ${file.fileName}:`, err);
+        console.error(`Failed to fetch ${file.fileName} for ZIP:`, err);
         notifyProgress(tabId, {
           completed,
           failed,
           total: files.length,
           status: 'zipping',
-          message: `Failed: ${file.fileName}`,
+          message: `Failed: ${file.fileName} (${err.message})`,
         });
       }
     }
 
     if (fileData.length === 0) {
-      throw new Error('No files could be fetched for ZIP');
+      throw new Error('No files could be downloaded. Check your classroom permissions.');
     }
 
-    // Create ZIP using minimal ZIP implementation (no JSZip in service worker)
+    // Create ZIP using lightweight ZIP builder
     const zipBlob = await createZipBlob(fileData);
     const dataUrl = await blobToDataUrl(zipBlob);
 
-    // Download the ZIP
     chrome.downloads.download({
       url: dataUrl,
       filename: sanitizeFileName(zipName),
@@ -267,7 +254,7 @@ async function handleDownloadAsZip(message, sender, sendResponse) {
           failed,
           total: files.length,
           status: 'done',
-          message: 'ZIP download started!',
+          message: 'ZIP download completed!',
         });
         addToHistory({
           id: generateId(),
@@ -312,54 +299,215 @@ function processQueue() {
 
 async function executeDownload(item) {
   try {
-    await downloadFile(item.file);
+    await downloadFile(item.file, item.tabId);
     item.resolve?.({});
   } catch (error) {
     item.reject?.(error);
   }
 }
 
-function downloadFile(file) {
-  return new Promise((resolve, reject) => {
-    const url = getDownloadUrl(file);
-    const fileName = buildFileName(file);
+// --------------- Robust Blob Fetcher ---------------
+// Fetches the file using credentials and handles Google Drive virus warnings,
+// multi-account authuser routing, and Google Docs/Sheets/Slides export endpoints.
+async function fetchFileBlob(file) {
+  const authuser = file.authuser || '0';
+  let initialUrl = getDownloadUrl(file);
 
-    chrome.downloads.download(
-      {
-        url: url,
-        filename: fileName,
-        conflictAction: 'uniquify',
-      },
-      (downloadId) => {
-        if (chrome.runtime.lastError) {
-          const error = chrome.runtime.lastError.message;
-          addToHistory({
-            id: file.id || generateId(),
-            fileName: file.fileName,
-            url: url,
-            type: file.type,
-            fileId: file.fileId,
-            status: 'failed',
-            error: error,
-            timestamp: Date.now(),
-          });
-          reject(new Error(error));
-        } else {
-          addToHistory({
-            id: file.id || generateId(),
-            fileName: file.fileName,
-            url: url,
-            type: file.type,
-            fileId: file.fileId,
-            status: 'completed',
-            downloadId: downloadId,
-            timestamp: Date.now(),
-          });
-          resolve({ downloadId });
+  // Append authuser if not already present
+  if (!initialUrl.includes('authuser=')) {
+    const sep = initialUrl.includes('?') ? '&' : '?';
+    initialUrl = `${initialUrl}${sep}authuser=${authuser}`;
+  }
+
+  let response = await fetch(initialUrl, {
+    credentials: 'include',
+    headers: { 'Accept': '*/*' },
+  });
+
+  if (!response.ok && response.status !== 200) {
+    // If request failed with 403 or 401, check if authuser is required
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  let contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+  // If response is HTML, Google Drive may be showing the "virus scan warning / confirm download" page
+  if (contentType.includes('text/html')) {
+    const htmlText = await response.text();
+
+    let confirmUrl = null;
+
+    // 1. Check for standard download link: id="uc-download-link"
+    const linkMatch = htmlText.match(/id=["']uc-download-link["'][^>]*href=["']([^"']+)["']/i) ||
+                      htmlText.match(/href=["']([^"']*(?:drive\.usercontent\.google\.com\/download|uc\?export=download)[^"']*)["']/i);
+    if (linkMatch) {
+      let href = linkMatch[1].replace(/&amp;/g, '&');
+      if (href.startsWith('/')) {
+        href = 'https://drive.google.com' + href;
+      }
+      confirmUrl = href;
+    }
+
+    // 2. Check for form action: id="download-form"
+    if (!confirmUrl) {
+      const formMatch = htmlText.match(/<form[^>]*action=["']([^"']+)["'][^>]*>([\s\S]*?)<\/form>/i);
+      if (formMatch) {
+        let action = formMatch[1].replace(/&amp;/g, '&');
+        const formBody = formMatch[2];
+        const params = new URLSearchParams();
+        const inputRegex = /<input[^>]*name=["']([^"']+)["'][^>]*value=["']([^"']*)["'][^>]*>/gi;
+        let m;
+        while ((m = inputRegex.exec(formBody)) !== null) {
+          params.set(m[1], m[2]);
+        }
+        if (params.toString()) {
+          const sep = action.includes('?') ? '&' : '?';
+          confirmUrl = `${action}${sep}${params.toString()}`;
         }
       }
-    );
-  });
+    }
+
+    // 3. Check for confirmation token in HTML
+    if (!confirmUrl && file.fileId) {
+      const tokenMatch = htmlText.match(/confirm=([a-zA-Z0-9_-]+)/);
+      if (tokenMatch) {
+        confirmUrl = `https://drive.google.com/uc?export=download&id=${file.fileId}&confirm=${tokenMatch[1]}&authuser=${authuser}`;
+      }
+    }
+
+    // 4. Try direct usercontent download URL as fallback
+    if (!confirmUrl && file.fileId) {
+      confirmUrl = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&confirm=t&authuser=${authuser}`;
+    }
+
+    if (confirmUrl) {
+      if (!confirmUrl.includes('authuser=')) {
+        const sep = confirmUrl.includes('?') ? '&' : '?';
+        confirmUrl = `${confirmUrl}${sep}authuser=${authuser}`;
+      }
+
+      response = await fetch(confirmUrl, {
+        credentials: 'include',
+        headers: { 'Accept': '*/*' },
+      });
+
+      contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) {
+        const errorText = await response.text();
+        if (errorText.includes('ServiceLogin') || errorText.includes('accounts.google.com') || errorText.includes('403') || errorText.includes('Forbidden')) {
+          throw new Error('Access forbidden (403). Make sure you are signed in with the school account that has access.');
+        }
+        throw new Error('Google Drive returned an HTML page instead of file content.');
+      }
+    } else {
+      if (htmlText.includes('ServiceLogin') || htmlText.includes('accounts.google.com') || htmlText.includes('403') || htmlText.includes('Forbidden')) {
+        throw new Error('Access forbidden (403). Please verify account authorization.');
+      }
+      throw new Error('File download resulted in an HTML page (not a downloadable binary).');
+    }
+  }
+
+  const blob = await response.blob();
+
+  // Validate that the binary is not an HTML error document disguised with a different mime-type
+  if (blob.size < 5000) {
+    const sample = await blob.slice(0, 200).text();
+    if (sample.trim().toLowerCase().startsWith('<!doctype html') || sample.includes('<html')) {
+      throw new Error('Access forbidden: Google returned an HTML login or error page.');
+    }
+  }
+
+  return blob;
+}
+
+// Fallback: If background fetch fails, request the tab (which runs directly inside classroom.google.com) to fetch it
+async function fetchFileBlobWithFallback(file, tabId) {
+  try {
+    return await fetchFileBlob(file);
+  } catch (err) {
+    // If we have a tabId, ask the tab content script to fetch it in its authenticated DOM context
+    if (tabId) {
+      try {
+        const tabResponse = await chrome.tabs.sendMessage(tabId, {
+          action: 'fetchFileInTab',
+          file,
+        });
+        if (tabResponse?.success && tabResponse.dataUrl) {
+          // Convert dataUrl back to blob
+          const res = await fetch(tabResponse.dataUrl);
+          return await res.blob();
+        }
+      } catch (tabErr) {
+        console.warn('Tab fallback fetch failed:', tabErr);
+      }
+    }
+    throw err;
+  }
+}
+
+// --------------- Download File Function ---------------
+async function downloadFile(file, tabId) {
+  const fileName = buildFileName(file);
+  const downloadIdKey = file.id || generateId();
+
+  try {
+    // 1. Fetch the real binary blob
+    const blob = await fetchFileBlobWithFallback(file, tabId);
+
+    // 2. Convert blob to Data URL to bypass Chrome's unauthenticated download manager
+    const dataUrl = await blobToDataUrl(blob);
+
+    // 3. Initiate Chrome download with Data URL
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        {
+          url: dataUrl,
+          filename: fileName,
+          conflictAction: 'uniquify',
+        },
+        (downloadId) => {
+          if (chrome.runtime.lastError) {
+            const error = chrome.runtime.lastError.message;
+            addToHistory({
+              id: downloadIdKey,
+              fileName: file.fileName,
+              url: file.url,
+              type: file.type,
+              fileId: file.fileId,
+              status: 'failed',
+              error: error,
+              timestamp: Date.now(),
+            });
+            reject(new Error(error));
+          } else {
+            addToHistory({
+              id: downloadIdKey,
+              fileName: file.fileName,
+              url: file.url,
+              type: file.type,
+              fileId: file.fileId,
+              status: 'completed',
+              downloadId: downloadId,
+              timestamp: Date.now(),
+            });
+            resolve({ downloadId });
+          }
+        }
+      );
+    });
+  } catch (error) {
+    addToHistory({
+      id: downloadIdKey,
+      fileName: file.fileName,
+      url: file.url,
+      type: file.type,
+      fileId: file.fileId,
+      status: 'failed',
+      error: error.message,
+      timestamp: Date.now(),
+    });
+    throw error;
+  }
 }
 
 // --------------- URL Builders ---------------
@@ -367,23 +515,23 @@ function getDownloadUrl(file) {
   if (!file) return '';
 
   const settings = state.settings || DEFAULT_SETTINGS;
+  const auth = file.authuser !== undefined ? file.authuser : '0';
 
   switch (file.type) {
     case 'drive':
-      // Regular Drive file
-      return `https://drive.google.com/uc?export=download&id=${file.fileId}&confirm=t`;
+      return `https://drive.google.com/uc?export=download&id=${file.fileId}&confirm=t&authuser=${auth}`;
 
     case 'doc':
-      return `https://docs.google.com/document/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}`;
+      return `https://docs.google.com/document/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}&authuser=${auth}`;
 
     case 'sheet':
-      return `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}`;
+      return `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}&authuser=${auth}`;
 
     case 'slide':
-      return `https://docs.google.com/presentation/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}`;
+      return `https://docs.google.com/presentation/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}?authuser=${auth}`;
 
     case 'drawing':
-      return `https://docs.google.com/drawings/d/${file.fileId}/export/png`;
+      return `https://docs.google.com/drawings/d/${file.fileId}/export/png?authuser=${auth}`;
 
     case 'direct':
     default:
@@ -395,7 +543,7 @@ function buildFileName(file) {
   const settings = state.settings || DEFAULT_SETTINGS;
   let name = sanitizeFileName(file.fileName || 'untitled');
 
-  // Add extension if missing for exported Google files
+  // Add extension if missing for exported Google Workspace files
   if (file.type === 'doc' && !name.match(/\.(pdf|docx|odt|rtf|txt|html|epub)$/i)) {
     name += '.' + (settings.docExportFormat || 'pdf');
   } else if (file.type === 'sheet' && !name.match(/\.(xlsx|csv|pdf|ods|tsv)$/i)) {
@@ -404,7 +552,7 @@ function buildFileName(file) {
     name += '.' + (settings.slideExportFormat || 'pptx');
   }
 
-  // Build folder path
+  // Build folder path if requested
   if (settings.preserveFolders && file.folderPath) {
     return sanitizePath(file.folderPath) + '/' + name;
   }
@@ -413,8 +561,6 @@ function buildFileName(file) {
 }
 
 // --------------- Minimal ZIP Implementation ---------------
-// A lightweight ZIP creator for service worker context (no JSZip dependency)
-
 async function createZipBlob(files) {
   const encoder = new TextEncoder();
   const localHeaders = [];
@@ -430,17 +576,17 @@ async function createZipBlob(files) {
     // Local file header
     const local = new ArrayBuffer(30 + nameBytes.length);
     const lv = new DataView(local);
-    lv.setUint32(0, 0x04034b50, true);  // signature
-    lv.setUint16(4, 20, true);           // version needed
-    lv.setUint16(6, 0, true);            // flags
-    lv.setUint16(8, 0, true);            // compression (none)
-    lv.setUint16(10, 0, true);           // mod time
-    lv.setUint16(12, 0, true);           // mod date
-    lv.setUint32(14, crc, true);         // crc32
-    lv.setUint32(18, size, true);        // compressed size
-    lv.setUint32(22, size, true);        // uncompressed size
-    lv.setUint16(26, nameBytes.length, true); // name length
-    lv.setUint16(28, 0, true);           // extra length
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0, true);
+    lv.setUint16(8, 0, true);
+    lv.setUint16(10, 0, true);
+    lv.setUint16(12, 0, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, size, true);
+    lv.setUint32(22, size, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);
     new Uint8Array(local, 30).set(nameBytes);
 
     localHeaders.push({ header: new Uint8Array(local), data, offset, crc, size, nameBytes });
@@ -448,23 +594,23 @@ async function createZipBlob(files) {
     // Central directory header
     const central = new ArrayBuffer(46 + nameBytes.length);
     const cv = new DataView(central);
-    cv.setUint32(0, 0x02014b50, true);   // signature
-    cv.setUint16(4, 20, true);            // version made
-    cv.setUint16(6, 20, true);            // version needed
-    cv.setUint16(8, 0, true);             // flags
-    cv.setUint16(10, 0, true);            // compression
-    cv.setUint16(12, 0, true);            // mod time
-    cv.setUint16(14, 0, true);            // mod date
-    cv.setUint32(16, crc, true);          // crc32
-    cv.setUint32(20, size, true);         // compressed size
-    cv.setUint32(24, size, true);         // uncompressed size
-    cv.setUint16(28, nameBytes.length, true); // name length
-    cv.setUint16(30, 0, true);            // extra length
-    cv.setUint16(32, 0, true);            // comment length
-    cv.setUint16(34, 0, true);            // disk number
-    cv.setUint16(36, 0, true);            // internal attrs
-    cv.setUint32(38, 0, true);            // external attrs
-    cv.setUint32(42, offset, true);       // local header offset
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint16(12, 0, true);
+    cv.setUint16(14, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, size, true);
+    cv.setUint32(24, size, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true);
+    cv.setUint16(36, 0, true);
+    cv.setUint32(38, 0, true);
+    cv.setUint32(42, offset, true);
     new Uint8Array(central, 46).set(nameBytes);
 
     centralHeaders.push(new Uint8Array(central));
@@ -488,14 +634,14 @@ async function createZipBlob(files) {
   // End of central directory
   const eocd = new ArrayBuffer(22);
   const ev = new DataView(eocd);
-  ev.setUint32(0, 0x06054b50, true);       // signature
-  ev.setUint16(4, 0, true);                 // disk number
-  ev.setUint16(6, 0, true);                 // central dir disk
-  ev.setUint16(8, files.length, true);       // entries on disk
-  ev.setUint16(10, files.length, true);      // total entries
-  ev.setUint32(12, centralSize, true);       // central dir size
-  ev.setUint32(16, centralStart, true);      // central dir offset
-  ev.setUint16(20, 0, true);                // comment length
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(4, 0, true);
+  ev.setUint16(6, 0, true);
+  ev.setUint16(8, files.length, true);
+  ev.setUint16(10, files.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, centralStart, true);
+  ev.setUint16(20, 0, true);
 
   parts.push(new Uint8Array(eocd));
 
@@ -539,7 +685,7 @@ function parseLinkUrl(url) {
   if (!url) return null;
 
   // Google Drive file
-  let match = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  let match = url.match(/drive\.google\.com(?:\/u\/\d+)?\/file\/d\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'drive',
@@ -547,10 +693,11 @@ function parseLinkUrl(url) {
       fileName: 'file',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
-  match = url.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+  match = url.match(/drive\.google\.com(?:\/u\/\d+)?\/open\?.*id=([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'drive',
@@ -558,11 +705,12 @@ function parseLinkUrl(url) {
       fileName: 'file',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
   // Google Doc
-  match = url.match(/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/);
+  match = url.match(/docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'doc',
@@ -570,11 +718,12 @@ function parseLinkUrl(url) {
       fileName: 'document',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
   // Google Sheet
-  match = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  match = url.match(/docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'sheet',
@@ -582,11 +731,12 @@ function parseLinkUrl(url) {
       fileName: 'spreadsheet',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
   // Google Slide
-  match = url.match(/docs\.google\.com\/presentation\/d\/([a-zA-Z0-9_-]+)/);
+  match = url.match(/docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'slide',
@@ -594,11 +744,12 @@ function parseLinkUrl(url) {
       fileName: 'presentation',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
   // Google Drawing
-  match = url.match(/docs\.google\.com\/drawings\/d\/([a-zA-Z0-9_-]+)/);
+  match = url.match(/docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]+)/);
   if (match) {
     return {
       type: 'drawing',
@@ -606,10 +757,22 @@ function parseLinkUrl(url) {
       fileName: 'drawing',
       url: url,
       id: generateId(),
+      authuser: extractAuthUserFromUrl(url),
     };
   }
 
   return null;
+}
+
+function extractAuthUserFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const q = u.searchParams.get('authuser');
+    if (q) return q;
+    const m = u.pathname.match(/\/u\/(\d+)\//);
+    if (m) return m[1];
+  } catch {}
+  return '0';
 }
 
 function extractFileNameFromUrl(url) {
@@ -637,7 +800,6 @@ function generateId() {
 
 function addToHistory(item) {
   state.downloadHistory.unshift(item);
-  // Keep only last 200 items
   if (state.downloadHistory.length > 200) {
     state.downloadHistory = state.downloadHistory.slice(0, 200);
   }

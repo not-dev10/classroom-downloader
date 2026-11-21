@@ -11,7 +11,7 @@
     <!-- Header -->
     <header class="cd-popup-header">
       <div class="cd-logo">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
           <rect width="24" height="24" rx="6" fill="#1a73e8"/>
           <path d="M7 14l5 5 5-5M12 19V5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
@@ -20,166 +20,181 @@
           <span class="cd-version">v1.0.0</span>
         </div>
       </div>
+      <div class="cd-header-right">
+        <span class="cd-course-chip" id="courseChip" title="Active Classroom">Classroom</span>
+      </div>
     </header>
-
-    <!-- Page Info -->
-    <section class="cd-section cd-page-info" id="pageInfoSection">
-      <div class="cd-info-row">
-        <span class="cd-info-label">Course</span>
-        <span class="cd-info-value" id="courseName">Detecting...</span>
-      </div>
-      <div class="cd-info-row">
-        <span class="cd-info-label">Page</span>
-        <span class="cd-info-value" id="pageType">—</span>
-      </div>
-      <div class="cd-info-row">
-        <span class="cd-info-label">Materials</span>
-        <span class="cd-info-value cd-badge" id="materialCount">0</span>
-      </div>
-      <div class="cd-info-row" id="selectedRow" style="display:none">
-        <span class="cd-info-label">Selected</span>
-        <span class="cd-info-value cd-badge cd-badge-primary" id="selectedCount">0</span>
-      </div>
-    </section>
 
     <!-- Not on Classroom Warning -->
     <section class="cd-section cd-warning-section" id="notClassroom" style="display:none">
       <div class="cd-warning-icon">⚠️</div>
-      <p>Navigate to <strong>Google Classroom</strong> to use this extension.</p>
-      <a href="https://classroom.google.com" target="_blank" class="cd-btn cd-btn-outline">
-        Open Classroom
+      <p>Navigate to <strong>Google Classroom</strong> to view and download course materials.</p>
+      <a href="https://classroom.google.com" target="_blank" class="cd-btn cd-btn-primary">
+        Open Google Classroom
       </a>
     </section>
 
-    <!-- Actions -->
-    <section class="cd-section cd-actions" id="actionsSection">
-      <button class="cd-btn cd-btn-primary cd-btn-full" id="downloadAllBtn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        Download All
-      </button>
-      <div class="cd-btn-row">
-        <button class="cd-btn cd-btn-outline" id="selectAllBtn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="9 11 12 14 22 4"/>
-            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-          </svg>
-          Select All
+    <!-- Main Content when on Google Classroom -->
+    <main id="classroomContent">
+      <!-- Course Info Summary Bar -->
+      <section class="cd-section cd-page-info" id="pageInfoSection">
+        <div class="cd-info-row">
+          <div class="cd-info-group">
+            <span class="cd-info-label">Course:</span>
+            <span class="cd-info-value" id="courseName">Detecting...</span>
+          </div>
+          <div class="cd-info-group">
+            <span class="cd-badge cd-badge-type" id="pageType">Classwork</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tabs Navigation -->
+      <div class="cd-tabs">
+        <button class="cd-tab cd-tab-active" data-tab="files" id="tabFiles">
+          Materials <span class="cd-tab-badge" id="tabFilesBadge">0</span>
         </button>
-        <button class="cd-btn cd-btn-outline" id="downloadSelectedBtn" disabled>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-          Download Selected
-        </button>
+        <button class="cd-tab" data-tab="history" id="tabHistory">History</button>
+        <button class="cd-tab" data-tab="settings" id="tabSettings">Settings</button>
       </div>
-      <button class="cd-btn cd-btn-secondary cd-btn-full" id="zipAllBtn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-        </svg>
-        Download All as ZIP
-      </button>
-      <button class="cd-btn cd-btn-text cd-btn-full" id="scanBtn">
-        🔍 Rescan Page
-      </button>
-    </section>
 
-    <!-- Tabs: History / Settings -->
-    <div class="cd-tabs">
-      <button class="cd-tab cd-tab-active" data-tab="history">History</button>
-      <button class="cd-tab" data-tab="settings">Settings</button>
-    </div>
+      <!-- Tab 1: Files Panel (Active by Default) -->
+      <section class="cd-panel cd-panel-active" id="filesPanel">
+        <!-- Toolbar: Search & Quick Selection -->
+        <div class="cd-files-toolbar">
+          <div class="cd-search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="fileSearchInput" placeholder="Filter materials by name..." />
+            <button class="cd-search-clear cd-hidden" id="searchClearBtn" title="Clear filter">✕</button>
+          </div>
+          <div class="cd-files-select-bar">
+            <button class="cd-text-btn" id="popupSelectAll">Select All</button>
+            <span class="cd-dot-separator">•</span>
+            <button class="cd-text-btn" id="popupDeselectAll">Deselect All</button>
+            <span class="cd-selected-stats" id="selectedStats">0 selected</span>
+          </div>
+        </div>
 
-    <!-- History Panel -->
-    <section class="cd-section cd-panel" id="historyPanel">
-      <div class="cd-history-list" id="historyList">
-        <div class="cd-empty-state">No downloads yet</div>
-      </div>
-      <button class="cd-btn cd-btn-text cd-btn-full cd-btn-sm" id="clearHistoryBtn">
-        Clear History
-      </button>
-    </section>
+        <!-- Scrollable Files List -->
+        <div class="cd-files-list" id="filesList">
+          <div class="cd-empty-state" id="filesEmptyState">
+            <div class="cd-empty-icon">📂</div>
+            <p>Scanning for classroom attachments...</p>
+            <span class="cd-empty-tip">Open a Classwork topic or Assignment page to see files.</span>
+            <button class="cd-btn cd-btn-outline cd-btn-sm" id="emptyRescanBtn">Rescan Page</button>
+          </div>
+        </div>
 
-    <!-- Settings Panel -->
-    <section class="cd-section cd-panel" id="settingsPanel" style="display:none">
-      <div class="cd-setting">
-        <label class="cd-setting-label">Default download</label>
-        <select class="cd-select" id="settingBehavior">
-          <option value="individual">Individual files</option>
-          <option value="zip">ZIP archive</option>
-        </select>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">Google Docs format</label>
-        <select class="cd-select" id="settingDocFormat">
-          <option value="pdf">PDF</option>
-          <option value="docx">DOCX</option>
-          <option value="odt">ODT</option>
-          <option value="rtf">RTF</option>
-          <option value="txt">Plain Text</option>
-        </select>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">Google Sheets format</label>
-        <select class="cd-select" id="settingSheetFormat">
-          <option value="xlsx">XLSX</option>
-          <option value="csv">CSV</option>
-          <option value="pdf">PDF</option>
-          <option value="ods">ODS</option>
-        </select>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">Google Slides format</label>
-        <select class="cd-select" id="settingSlideFormat">
-          <option value="pptx">PPTX</option>
-          <option value="pdf">PDF</option>
-          <option value="odp">ODP</option>
-        </select>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">Max concurrent downloads</label>
-        <select class="cd-select" id="settingConcurrent">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3" selected>3</option>
-          <option value="5">5</option>
-        </select>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">
-          <input type="checkbox" id="settingFolders" checked>
-          Preserve folder structure
-        </label>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">
-          <input type="checkbox" id="settingSkipDownloaded">
-          Skip already downloaded files
-        </label>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">
-          <input type="checkbox" id="settingNotifications" checked>
-          Show notifications
-        </label>
-      </div>
-      <div class="cd-setting">
-        <label class="cd-setting-label">Theme</label>
-        <select class="cd-select" id="settingTheme">
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </div>
-      <button class="cd-btn cd-btn-primary cd-btn-full cd-btn-sm" id="saveSettingsBtn">
-        Save Settings
-      </button>
-    </section>
+        <!-- Actions Footer inside Files Panel -->
+        <div class="cd-files-footer">
+          <button class="cd-btn cd-btn-primary cd-btn-full" id="downloadActionBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span id="downloadActionText">Download All Materials</span>
+          </button>
+          <div class="cd-btn-row">
+            <button class="cd-btn cd-btn-secondary" id="zipActionBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              Download as ZIP
+            </button>
+            <button class="cd-btn cd-btn-outline" id="scanBtn" title="Rescan page for newly loaded items">
+              🔍 Rescan
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 2: History Panel -->
+      <section class="cd-panel" id="historyPanel" style="display:none">
+        <div class="cd-history-list" id="historyList">
+          <div class="cd-empty-state">No downloads yet</div>
+        </div>
+        <div class="cd-panel-footer">
+          <button class="cd-btn cd-btn-text cd-btn-full cd-btn-sm" id="clearHistoryBtn">
+            Clear History
+          </button>
+        </div>
+      </section>
+
+      <!-- Tab 3: Settings Panel -->
+      <section class="cd-panel" id="settingsPanel" style="display:none">
+        <div class="cd-settings-list">
+          <div class="cd-setting">
+            <label class="cd-setting-label">Default bulk action</label>
+            <select class="cd-select" id="settingBehavior">
+              <option value="individual">Individual files</option>
+              <option value="zip">ZIP archive</option>
+            </select>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Google Docs format</label>
+            <select class="cd-select" id="settingDocFormat">
+              <option value="pdf">PDF (Recommended)</option>
+              <option value="docx">DOCX (Word)</option>
+              <option value="odt">ODT</option>
+              <option value="txt">Plain Text</option>
+            </select>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Google Sheets format</label>
+            <select class="cd-select" id="settingSheetFormat">
+              <option value="xlsx">XLSX (Excel)</option>
+              <option value="csv">CSV</option>
+              <option value="pdf">PDF</option>
+            </select>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Google Slides format</label>
+            <select class="cd-select" id="settingSlideFormat">
+              <option value="pptx">PPTX (PowerPoint)</option>
+              <option value="pdf">PDF</option>
+            </select>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Max concurrent downloads</label>
+            <select class="cd-select" id="settingConcurrent">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="5">5</option>
+            </select>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">
+              <input type="checkbox" id="settingFolders" checked>
+              Preserve course/assignment folders
+            </label>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">
+              <input type="checkbox" id="settingNotifications" checked>
+              Show download notifications
+            </label>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Theme</label>
+            <select class="cd-select" id="settingTheme">
+              <option value="system">System Default</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+        </div>
+        <div class="cd-panel-footer">
+          <button class="cd-btn cd-btn-primary cd-btn-full cd-btn-sm" id="saveSettingsBtn">
+            Save Settings
+          </button>
+        </div>
+      </section>
+    </main>
   </div>
   <script src="popup.js"></script>
 </body>

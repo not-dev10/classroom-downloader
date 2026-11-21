@@ -15,16 +15,17 @@
   const CHECKBOX_MARKER = 'data-cd-checkbox';
   const DOWNLOAD_BTN_MARKER = 'data-cd-download-btn';
 
-  // URL patterns for detecting file types
+  // URL patterns supporting multi-account indices (/u/0/, /u/1/, etc.)
   const PATTERNS = {
-    driveFile: /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/,
-    driveOpen: /drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/,
-    driveUc: /drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/,
-    googleDoc: /docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/,
-    googleSheet: /docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
-    googleSlide: /docs\.google\.com\/presentation\/d\/([a-zA-Z0-9_-]+)/,
-    googleDrawing: /docs\.google\.com\/drawings\/d\/([a-zA-Z0-9_-]+)/,
-    googleForm: /docs\.google\.com\/forms\/d\/([a-zA-Z0-9_-]+)/,
+    driveFile: /drive\.google\.com(?:\/u\/\d+)?\/file\/d\/([a-zA-Z0-9_-]+)/,
+    driveOpen: /drive\.google\.com(?:\/u\/\d+)?\/open\?.*id=([a-zA-Z0-9_-]+)/,
+    driveUc: /drive\.google\.com(?:\/u\/\d+)?\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+    driveUsercontent: /drive\.usercontent\.google\.com\/download\?.*id=([a-zA-Z0-9_-]+)/,
+    googleDoc: /docs\.google\.com(?:\/u\/\d+)?\/document\/d\/([a-zA-Z0-9_-]+)/,
+    googleSheet: /docs\.google\.com(?:\/u\/\d+)?\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
+    googleSlide: /docs\.google\.com(?:\/u\/\d+)?\/presentation\/d\/([a-zA-Z0-9_-]+)/,
+    googleDrawing: /docs\.google\.com(?:\/u\/\d+)?\/drawings\/d\/([a-zA-Z0-9_-]+)/,
+    googleForm: /docs\.google\.com(?:\/u\/\d+)?\/forms\/d\/([a-zA-Z0-9_-]+)/,
     youtube: /(?:youtube\.com|youtu\.be)\//,
     externalLink: /^https?:\/\//,
   };
@@ -44,9 +45,20 @@
   let progressOverlay = null;
   let pageInfo = { type: 'unknown', courseName: '', topicName: '', assignmentName: '' };
 
+  // --------------- Multi-Account Auth Detection ---------------
+  function getActiveAuthUser() {
+    try {
+      const uMatch = window.location.pathname.match(/\/u\/(\d+)\//);
+      if (uMatch) return uMatch[1];
+      const params = new URLSearchParams(window.location.search);
+      const qAuth = params.get('authuser');
+      if (qAuth) return qAuth;
+    } catch {}
+    return '0';
+  }
+
   // --------------- Page Detection ---------------
   function detectPageType() {
-    const url = window.location.href;
     const path = window.location.pathname;
 
     if (path.match(/\/c\/[^/]+\/a\/[^/]+/)) {
@@ -61,15 +73,18 @@
       pageInfo.type = 'home';
     }
 
-    // Try to get course name from page
+    // Try to get course name from page DOM
     const titleEl = document.querySelector(
-      '[data-course-name], .VHRMwb, h1, [role="heading"][aria-level="1"]'
+      '[data-course-name], .VHRMwb, h1, [role="heading"][aria-level="1"], .A657be'
     );
     if (titleEl) {
-      pageInfo.courseName = titleEl.textContent?.trim() || '';
+      const t = titleEl.textContent?.trim();
+      if (t && t !== 'Google Classroom') {
+        pageInfo.courseName = t;
+      }
     }
 
-    // Fallback: use document title
+    // Fallback: document title
     if (!pageInfo.courseName) {
       const title = document.title.replace(' - Google Classroom', '').trim();
       if (title && title !== 'Google Classroom') {
@@ -103,6 +118,9 @@
     } else if ((match = href.match(PATTERNS.driveUc))) {
       type = 'drive';
       fileId = match[1];
+    } else if ((match = href.match(PATTERNS.driveUsercontent))) {
+      type = 'drive';
+      fileId = match[1];
     } else if ((match = href.match(PATTERNS.googleDoc))) {
       type = 'doc';
       fileId = match[1];
@@ -116,19 +134,26 @@
       type = 'drawing';
       fileId = match[1];
     } else if (PATTERNS.externalLink.test(href)) {
-      // Could be a direct download link
       if (href.match(/\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|mp[34]|wav|avi|mov|mkv|csv|txt|rtf|odt|ods|odp)(\?|$)/i)) {
         type = 'direct';
       } else {
-        return null; // Skip unsupported external links
+        return null;
       }
     } else {
       return null;
     }
 
-    // Extract file name from the link's text content or parent card
-    let fileName = extractFileName(linkEl, type);
+    // Determine authuser
+    let authuser = getActiveAuthUser();
+    try {
+      const urlObj = new URL(href);
+      const q = urlObj.searchParams.get('authuser');
+      if (q) authuser = q;
+      const m = urlObj.pathname.match(/\/u\/(\d+)\//);
+      if (m) authuser = m[1];
+    } catch {}
 
+    const fileName = extractFileName(linkEl, type);
     const id = fileId || generateId();
 
     return {
@@ -137,52 +162,55 @@
       fileId,
       url: href,
       fileName,
+      authuser,
       linkElement: linkEl,
     };
   }
 
   function extractFileName(linkEl, type) {
-    // Try the link's own text
     let name = '';
 
-    // Look for text content in the attachment card
-    const card = linkEl.closest('[data-cd-card], [class*="material"], [class*="attachment"]') ||
-                 linkEl.closest('div[role="listitem"]') ||
-                 linkEl.closest('a');
+    // 1. Check aria-label of the link or card
+    const aria = linkEl.getAttribute('aria-label') || linkEl.title || '';
+    if (aria) {
+      // Strip common prefixes like "Attachment: ", "File: "
+      name = aria.replace(/^(?:Attachment:\s*|File:\s*|Open\s*)/i, '').trim();
+    }
 
-    if (card) {
-      // Look for title/name elements within the card
-      const titleEl = card.querySelector(
-        '[class*="title"], [class*="name"], .Z4BnXb, .yDSiEe, .rZXyKc'
-      );
-      if (titleEl) {
-        name = titleEl.textContent?.trim();
+    // 2. Look inside the attachment card element
+    if (!name) {
+      const card = linkEl.closest('[data-cd-card], [class*="material"], [class*="attachment"], div[role="listitem"], .QRiHXd, .e104Eb') || linkEl;
+      if (card) {
+        const titleEl = card.querySelector('[class*="title"], [class*="name"], .Z4BnXb, .yDSiEe, .rZXyKc, .A657be');
+        if (titleEl) {
+          name = titleEl.textContent?.trim() || '';
+        }
       }
     }
 
+    // 3. Look for text spans inside link
     if (!name) {
-      // Try aria-label
-      name = linkEl.getAttribute('aria-label') || linkEl.title || '';
-    }
-
-    if (!name) {
-      // Try inner text of the link
-      const textNodes = linkEl.querySelectorAll('span, div');
-      for (const node of textNodes) {
-        const t = node.textContent?.trim();
-        if (t && t.length > 2 && t.length < 200) {
+      const spans = linkEl.querySelectorAll('span, div');
+      for (const s of spans) {
+        const t = s.textContent?.trim();
+        if (t && t.length > 2 && t.length < 150 && !t.includes('Google Drive') && !t.includes('Google Docs')) {
           name = t;
           break;
         }
       }
     }
 
+    // 4. Link's direct text content
     if (!name) {
       name = linkEl.textContent?.trim()?.substring(0, 100) || '';
     }
 
-    // Clean up the name
-    name = name.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    // Clean up filename: remove multiple lines, extra spaces, and Google metadata
+    name = name
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|PDF|Word|PowerPoint|Excel)\b/gi, '')
+      .trim();
 
     if (!name || name.length < 2) {
       const typeNames = {
@@ -191,69 +219,63 @@
         sheet: 'Google Sheet',
         slide: 'Google Slides',
         drawing: 'Drawing',
-        direct: 'File',
+        direct: 'Attachment',
       };
-      name = typeNames[type] || 'File';
+      name = typeNames[type] || 'Attachment';
     }
 
     return name;
   }
 
   function getAttachmentContext(linkEl) {
-    // Try to find assignment/topic context
     let assignmentName = '';
     let topicName = '';
 
-    // Walk up to find assignment container
-    let container = linkEl.closest(
-      '[data-assignment-id], [data-coursework-id], [class*="assignment"]'
-    );
-
-    if (!container) {
-      // Try broader selectors
-      container = linkEl.closest('[data-item-id], [jsname], li, article');
-    }
-
-    if (container) {
-      const headings = container.querySelectorAll(
-        'h2, h3, [role="heading"], [class*="title"], .tLDEHd, .asQXV'
+    if (linkEl) {
+      let container = linkEl.closest(
+        '[data-assignment-id], [data-coursework-id], [class*="assignment"], [class*="coursework"], [data-item-id], li[role="listitem"], article'
       );
-      for (const h of headings) {
-        const text = h.textContent?.trim();
-        if (text && text.length > 1 && text.length < 200) {
-          assignmentName = text;
-          break;
-        }
-      }
-    }
 
-    // Try to find topic
-    let topicContainer = linkEl.closest('[data-topic-id]');
-    if (!topicContainer) {
-      // Walk up to find section with topic heading
-      let el = container || linkEl;
-      for (let i = 0; i < 15 && el; i++) {
-        el = el.parentElement;
-        if (!el) break;
-        const topicHeading = el.querySelector(
-          '[data-topic-id], .YVvGBb, h2[class*="topic"], h3[class*="topic"]'
+      if (container) {
+        const headings = container.querySelectorAll(
+          'h2, h3, [role="heading"], [class*="title"], .tLDEHd, .asQXV, .A657be'
         );
-        if (topicHeading) {
-          topicName = topicHeading.textContent?.trim() || '';
-          break;
+        for (const h of headings) {
+          const text = h.textContent?.trim();
+          if (text && text.length > 1 && text.length < 200) {
+            assignmentName = text;
+            break;
+          }
         }
       }
-    } else {
-      const heading = topicContainer.querySelector('h2, h3, [role="heading"]');
-      if (heading) {
-        topicName = heading.textContent?.trim() || '';
+
+      // Topic detection
+      let topicContainer = linkEl.closest('[data-topic-id]');
+      if (!topicContainer) {
+        let el = container || linkEl;
+        for (let i = 0; i < 15 && el; i++) {
+          el = el.parentElement;
+          if (!el) break;
+          const topicHeading = el.querySelector(
+            '[data-topic-id], .YVvGBb, h2[class*="topic"], h3[class*="topic"]'
+          );
+          if (topicHeading) {
+            topicName = topicHeading.textContent?.trim() || '';
+            break;
+          }
+        }
+      } else {
+        const heading = topicContainer.querySelector('h2, h3, [role="heading"]');
+        if (heading) {
+          topicName = heading.textContent?.trim() || '';
+        }
       }
     }
 
     return {
       assignmentName: assignmentName || pageInfo.assignmentName || '',
       topicName: topicName || pageInfo.topicName || '',
-      courseName: pageInfo.courseName || 'Course',
+      courseName: pageInfo.courseName || 'Classroom',
     };
   }
 
@@ -262,17 +284,14 @@
     if (linkEl.getAttribute(MARKER)) return;
     linkEl.setAttribute(MARKER, 'true');
 
-    // Find the best parent card to append controls to
     const card = linkEl.closest('a') || linkEl;
     const wrapper = card.parentElement || card;
 
-    // Make wrapper position relative if not already
     const style = window.getComputedStyle(wrapper);
     if (style.position === 'static') {
       wrapper.style.position = 'relative';
     }
 
-    // Create controls container
     const controls = document.createElement('div');
     controls.className = 'cd-controls';
     controls.setAttribute('data-cd-id', attachment.id);
@@ -287,9 +306,7 @@
         <span class="cd-check-icon">${ICONS.check}</span>
       </span>
     `;
-    checkbox.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
+    checkbox.addEventListener('click', (e) => e.stopPropagation());
     checkbox.querySelector('input').addEventListener('change', (e) => {
       e.stopPropagation();
       if (e.target.checked) {
@@ -314,9 +331,6 @@
 
     controls.appendChild(checkbox);
     controls.appendChild(dlBtn);
-
-    // Insert controls
-    wrapper.style.position = 'relative';
     wrapper.appendChild(controls);
   }
 
@@ -347,14 +361,11 @@
       </div>
     `;
 
-    // Event listeners
     floatingBar.querySelector('.cd-select-all-btn').addEventListener('click', selectAll);
     floatingBar.querySelector('.cd-deselect-btn').addEventListener('click', deselectAll);
     floatingBar.querySelector('.cd-download-selected-btn').addEventListener('click', downloadSelected);
     floatingBar.querySelector('.cd-zip-selected-btn').addEventListener('click', zipSelected);
-    floatingBar.querySelector('.cd-close-bar-btn').addEventListener('click', () => {
-      deselectAll();
-    });
+    floatingBar.querySelector('.cd-close-bar-btn').addEventListener('click', deselectAll);
 
     document.body.appendChild(floatingBar);
   }
@@ -413,7 +424,7 @@
     progressOverlay.classList.remove('cd-hidden');
 
     const { completed = 0, failed = 0, total = 0, message = '', status = '' } = progress;
-    const pending = total - completed - failed;
+    const pending = Math.max(0, total - completed - failed);
     const pct = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0;
 
     progressOverlay.querySelector('.cd-progress-bar').style.width = pct + '%';
@@ -428,7 +439,7 @@
 
     if (status === 'done' || status === 'error') {
       const header = progressOverlay.querySelector('.cd-progress-header h3');
-      header.textContent = status === 'done' ? 'Download Complete!' : 'Download Error';
+      header.textContent = status === 'done' ? 'Download Complete!' : 'Download Finished with Errors';
     }
   }
 
@@ -436,9 +447,7 @@
   function selectAll() {
     attachments.forEach((att, id) => {
       selectedFiles.add(id);
-      const checkbox = document.querySelector(
-        `.cd-checkbox[data-cd-file-id="${id}"]`
-      );
+      const checkbox = document.querySelector(`.cd-checkbox[data-cd-file-id="${id}"]`);
       if (checkbox) checkbox.checked = true;
     });
     updateFloatingBar();
@@ -450,15 +459,28 @@
     updateFloatingBar();
   }
 
+  function toggleFileSelection(fileId, isSelected) {
+    if (isSelected) {
+      selectedFiles.add(fileId);
+    } else {
+      selectedFiles.delete(fileId);
+    }
+    const checkbox = document.querySelector(`.cd-checkbox[data-cd-file-id="${fileId}"]`);
+    if (checkbox) checkbox.checked = isSelected;
+    updateFloatingBar();
+  }
+
   function downloadSingleFile(attachment) {
     const context = getAttachmentContext(attachment.linkElement);
     const file = {
-      ...attachment,
+      id: attachment.id,
+      type: attachment.type,
+      fileId: attachment.fileId,
+      url: attachment.url,
+      fileName: attachment.fileName,
+      authuser: attachment.authuser || getActiveAuthUser(),
       folderPath: buildFolderPath(context),
-      linkElement: undefined,
     };
-    // Remove non-serializable properties
-    delete file.linkElement;
 
     chrome.runtime.sendMessage({
       action: 'downloadFile',
@@ -581,7 +603,11 @@
           fileId: att.fileId,
           url: att.url,
           fileName: att.fileName,
+          authuser: att.authuser || getActiveAuthUser(),
           folderPath: buildFolderPath(context),
+          assignmentName: context.assignmentName,
+          topicName: context.topicName,
+          selected: true,
         });
       }
     }
@@ -598,7 +624,12 @@
         fileId: att.fileId,
         url: att.url,
         fileName: att.fileName,
+        authuser: att.authuser || getActiveAuthUser(),
         folderPath: buildFolderPath(context),
+        assignmentName: context.assignmentName,
+        topicName: context.topicName,
+        courseName: context.courseName,
+        selected: selectedFiles.has(att.id),
       });
     });
     return files;
@@ -620,6 +651,33 @@
     return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
   }
 
+  // --------------- In-Tab Fetch Handler ---------------
+  async function fetchFileInTab(file) {
+    const authuser = file.authuser || getActiveAuthUser();
+    let url = file.url;
+
+    if (file.type === 'drive' && file.fileId) {
+      url = `https://drive.google.com/uc?export=download&id=${file.fileId}&authuser=${authuser}&confirm=t`;
+    } else if (file.type === 'doc' && file.fileId) {
+      url = `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authuser}`;
+    } else if (file.type === 'sheet' && file.fileId) {
+      url = `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=xlsx&authuser=${authuser}`;
+    } else if (file.type === 'slide' && file.fileId) {
+      url = `https://docs.google.com/presentation/d/${file.fileId}/export/pptx?authuser=${authuser}`;
+    }
+
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   // --------------- Toast Notifications ---------------
   function showToast(message, type = 'info') {
     const toast = document.createElement('div');
@@ -627,7 +685,6 @@
     toast.textContent = message;
     document.body.appendChild(toast);
 
-    // Trigger animation
     requestAnimationFrame(() => {
       toast.classList.add('cd-toast-visible');
     });
@@ -635,15 +692,17 @@
     setTimeout(() => {
       toast.classList.remove('cd-toast-visible');
       setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, 3200);
   }
 
   // --------------- Scanner ---------------
   function scanForAttachments() {
     detectPageType();
 
-    // Find all links on the page
-    const links = document.querySelectorAll('a[href]');
+    // Query links and attachment elements
+    const links = document.querySelectorAll(
+      'a[href*="drive.google.com"], a[href*="docs.google.com"], a[href*="drive.usercontent.google.com"], a[href]'
+    );
     let newCount = 0;
 
     links.forEach(link => {
@@ -651,11 +710,10 @@
 
       const attachment = parseAttachmentLink(link);
       if (attachment) {
-        // Check for duplicates by fileId
         let isDuplicate = false;
         if (attachment.fileId) {
           for (const [existingId, existing] of attachments) {
-            if (existing.fileId === attachment.fileId && existing.url === attachment.url) {
+            if (existing.fileId === attachment.fileId) {
               isDuplicate = true;
               break;
             }
@@ -681,14 +739,13 @@
 
   // --------------- Mutation Observer ---------------
   function setupObserver() {
+    let timer = null;
     const observer = new MutationObserver((mutations) => {
       let shouldScan = false;
-
       for (const mutation of mutations) {
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              // Check if the added node or its children contain links
               if (node.tagName === 'A' || node.querySelector?.('a[href]')) {
                 shouldScan = true;
                 break;
@@ -700,17 +757,12 @@
       }
 
       if (shouldScan) {
-        // Debounce scanning
-        clearTimeout(setupObserver._timer);
-        setupObserver._timer = setTimeout(() => scanForAttachments(), 300);
+        clearTimeout(timer);
+        timer = setTimeout(() => scanForAttachments(), 350);
       }
     });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-
+    observer.observe(document.body, { childList: true, subtree: true });
     return observer;
   }
 
@@ -721,15 +773,13 @@
     const checkUrl = () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        // Page changed — re-scan after content loads
         setTimeout(() => {
           detectPageType();
           scanForAttachments();
-        }, 1500);
+        }, 1200);
       }
     };
 
-    // Listen for History API changes
     const origPushState = history.pushState;
     history.pushState = function (...args) {
       origPushState.apply(this, args);
@@ -743,8 +793,6 @@
     };
 
     window.addEventListener('popstate', checkUrl);
-
-    // Also poll as fallback (some SPA changes don't trigger events)
     setInterval(checkUrl, 2000);
   }
 
@@ -759,12 +807,18 @@
 
         case 'getPageInfo':
           detectPageType();
+          scanForAttachments();
           sendResponse({
             pageInfo,
             attachmentCount: attachments.size,
             selectedCount: selectedFiles.size,
             attachments: getAllFiles(),
           });
+          return false;
+
+        case 'toggleFileSelect':
+          toggleFileSelection(message.fileId, message.selected);
+          sendResponse({ success: true, selectedCount: selectedFiles.size });
           return false;
 
         case 'triggerDownloadAll':
@@ -782,21 +836,43 @@
           sendResponse({ success: true });
           return false;
 
+        case 'triggerZipSelected':
+          zipSelected();
+          sendResponse({ success: true });
+          return false;
+
         case 'triggerSelectAll':
           selectAll();
-          sendResponse({ success: true });
+          sendResponse({ success: true, selectedCount: selectedFiles.size });
           return false;
 
         case 'triggerDeselectAll':
           deselectAll();
-          sendResponse({ success: true });
+          sendResponse({ success: true, selectedCount: 0 });
           return false;
+
+        case 'downloadSingleFileById':
+          const att = attachments.get(message.fileId);
+          if (att) {
+            downloadSingleFile(att);
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ success: false, error: 'File not found on page' });
+          }
+          return false;
+
+        case 'fetchFileInTab':
+          fetchFileInTab(message.file)
+            .then(dataUrl => sendResponse({ success: true, dataUrl }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+          return true; // async
 
         case 'scanPage':
           const count = scanForAttachments();
           sendResponse({
             newAttachments: count,
             totalAttachments: attachments.size,
+            attachments: getAllFiles(),
           });
           return false;
 
@@ -815,14 +891,12 @@
     setupUrlWatcher();
     setupMessageListener();
 
-    // Re-scan periodically for lazy-loaded content
-    setTimeout(() => scanForAttachments(), 2000);
-    setTimeout(() => scanForAttachments(), 5000);
+    setTimeout(() => scanForAttachments(), 1500);
+    setTimeout(() => scanForAttachments(), 4000);
 
     console.log('[Classroom Downloader] Initialized — found', attachments.size, 'attachments');
   }
 
-  // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

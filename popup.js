@@ -5,27 +5,33 @@
 (function () {
   'use strict';
 
-  // --------------- DOM References ---------------
+  // --------------- DOM Elements ---------------
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
   const elements = {
     courseName: $('#courseName'),
+    courseChip: $('#courseChip'),
     pageType: $('#pageType'),
-    materialCount: $('#materialCount'),
-    selectedCount: $('#selectedCount'),
-    selectedRow: $('#selectedRow'),
+    classroomContent: $('#classroomContent'),
     notClassroom: $('#notClassroom'),
-    pageInfoSection: $('#pageInfoSection'),
-    actionsSection: $('#actionsSection'),
-    downloadAllBtn: $('#downloadAllBtn'),
-    selectAllBtn: $('#selectAllBtn'),
-    downloadSelectedBtn: $('#downloadSelectedBtn'),
-    zipAllBtn: $('#zipAllBtn'),
+    tabFilesBadge: $('#tabFilesBadge'),
+    fileSearchInput: $('#fileSearchInput'),
+    searchClearBtn: $('#searchClearBtn'),
+    popupSelectAll: $('#popupSelectAll'),
+    popupDeselectAll: $('#popupDeselectAll'),
+    selectedStats: $('#selectedStats'),
+    filesList: $('#filesList'),
+    filesEmptyState: $('#filesEmptyState'),
+    downloadActionBtn: $('#downloadActionBtn'),
+    downloadActionText: $('#downloadActionText'),
+    zipActionBtn: $('#zipActionBtn'),
     scanBtn: $('#scanBtn'),
+    emptyRescanBtn: $('#emptyRescanBtn'),
     historyList: $('#historyList'),
     clearHistoryBtn: $('#clearHistoryBtn'),
     saveSettingsBtn: $('#saveSettingsBtn'),
+    filesPanel: $('#filesPanel'),
     historyPanel: $('#historyPanel'),
     settingsPanel: $('#settingsPanel'),
   };
@@ -33,6 +39,8 @@
   // --------------- State ---------------
   let currentTabId = null;
   let isClassroom = false;
+  let attachmentsList = [];
+  let filterQuery = '';
 
   // --------------- Init ---------------
   async function init() {
@@ -58,17 +66,15 @@
       isClassroom = true;
       showClassroom();
 
-      // Get page info from content script
+      // Request data from content script
       try {
         const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getPageInfo' });
         if (response) {
-          updatePageInfo(response);
+          updateView(response);
         }
       } catch (err) {
-        // Content script might not be injected yet
-        elements.courseName.textContent = 'Loading...';
-        elements.materialCount.textContent = '—';
-        console.log('Content script not ready:', err.message);
+        elements.courseName.textContent = 'Loading Classroom...';
+        console.warn('Content script not ready:', err.message);
       }
     } catch (err) {
       showNotClassroom();
@@ -76,21 +82,22 @@
   }
 
   function showNotClassroom() {
-    elements.notClassroom.style.display = 'block';
-    elements.pageInfoSection.style.display = 'none';
-    elements.actionsSection.style.display = 'none';
+    elements.notClassroom.style.display = 'flex';
+    elements.classroomContent.style.display = 'none';
   }
 
   function showClassroom() {
     elements.notClassroom.style.display = 'none';
-    elements.pageInfoSection.style.display = 'block';
-    elements.actionsSection.style.display = 'flex';
+    elements.classroomContent.style.display = 'block';
   }
 
-  function updatePageInfo(data) {
-    const { pageInfo, attachmentCount, selectedCount } = data;
+  function updateView(data) {
+    const { pageInfo, attachmentCount, selectedCount, attachments } = data;
 
-    elements.courseName.textContent = pageInfo?.courseName || 'Google Classroom';
+    // Course info
+    const name = pageInfo?.courseName || 'Google Classroom';
+    elements.courseName.textContent = name;
+    elements.courseChip.textContent = name.length > 18 ? name.substring(0, 16) + '...' : name;
 
     const pageTypes = {
       stream: 'Stream',
@@ -98,84 +105,265 @@
       assignment: 'Assignment',
       material: 'Material',
       home: 'Home',
-      unknown: 'Page',
+      unknown: 'Classroom',
     };
-    elements.pageType.textContent = pageTypes[pageInfo?.type] || 'Page';
+    elements.pageType.textContent = pageTypes[pageInfo?.type] || 'Classwork';
 
-    elements.materialCount.textContent = attachmentCount || 0;
+    // Attachments list
+    attachmentsList = attachments || [];
+    elements.tabFilesBadge.textContent = attachmentsList.length;
 
-    if (selectedCount > 0) {
-      elements.selectedRow.style.display = 'flex';
-      elements.selectedCount.textContent = selectedCount;
-      elements.downloadSelectedBtn.disabled = false;
-    } else {
-      elements.selectedRow.style.display = 'none';
-      elements.downloadSelectedBtn.disabled = true;
+    renderFilesList();
+    updateSelectionUI();
+  }
+
+  // --------------- Render Files List ---------------
+  function renderFilesList() {
+    const filtered = attachmentsList.filter(file => {
+      if (!filterQuery) return true;
+      const q = filterQuery.toLowerCase();
+      return (
+        file.fileName?.toLowerCase().includes(q) ||
+        file.assignmentName?.toLowerCase().includes(q) ||
+        file.topicName?.toLowerCase().includes(q) ||
+        file.type?.toLowerCase().includes(q)
+      );
+    });
+
+    if (filtered.length === 0) {
+      elements.filesList.innerHTML = `
+        <div class="cd-empty-state">
+          <div class="cd-empty-icon">${filterQuery ? '🔍' : '📂'}</div>
+          <p>${filterQuery ? 'No materials match your search.' : 'No downloadable materials detected on this page.'}</p>
+          <span class="cd-empty-tip">${filterQuery ? 'Try another keyword.' : 'Expand an assignment or navigate to the Classwork tab.'}</span>
+        </div>
+      `;
+      return;
     }
 
-    // Disable actions if no materials
-    const hasFiles = attachmentCount > 0;
-    elements.downloadAllBtn.disabled = !hasFiles;
-    elements.zipAllBtn.disabled = !hasFiles;
-    elements.selectAllBtn.disabled = !hasFiles;
+    elements.filesList.innerHTML = '';
+
+    filtered.forEach(file => {
+      const row = document.createElement('div');
+      row.className = `cd-file-row ${file.selected ? 'cd-selected-row' : ''}`;
+      row.setAttribute('data-id', file.id);
+
+      const typeMeta = getTypeMetadata(file.type);
+
+      row.innerHTML = `
+        <label class="cd-file-check-label" title="Select for bulk download">
+          <input type="checkbox" class="cd-file-checkbox" data-file-id="${file.id}" ${file.selected ? 'checked' : ''} />
+        </label>
+        <div class="cd-file-icon-box ${file.type}" title="${typeMeta.label}">
+          ${typeMeta.icon}
+        </div>
+        <div class="cd-file-info">
+          <div class="cd-file-title" title="${escapeHtml(file.fileName)}">${escapeHtml(file.fileName)}</div>
+          <div class="cd-file-subtext">
+            ${file.assignmentName ? `<span class="cd-badge-sub" title="${escapeHtml(file.assignmentName)}">${escapeHtml(file.assignmentName)}</span>` : ''}
+            <span class="cd-type-label">${typeMeta.label}</span>
+          </div>
+        </div>
+        <button class="cd-file-download-btn" data-file-id="${file.id}" title="Download: ${escapeHtml(file.fileName)}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </button>
+      `;
+
+      // Checkbox event
+      const cb = row.querySelector('.cd-file-checkbox');
+      cb.addEventListener('change', (e) => {
+        const checked = e.target.checked;
+        file.selected = checked;
+        row.classList.toggle('cd-selected-row', checked);
+        syncFileSelection(file.id, checked);
+        updateSelectionUI();
+      });
+
+      // Individual download button event
+      const dlBtn = row.querySelector('.cd-file-download-btn');
+      dlBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerSingleDownload(file, dlBtn);
+      });
+
+      elements.filesList.appendChild(row);
+    });
+  }
+
+  function getTypeMetadata(type) {
+    switch (type) {
+      case 'doc':
+        return { label: 'Google Doc', icon: '📝' };
+      case 'sheet':
+        return { label: 'Google Sheet', icon: '📊' };
+      case 'slide':
+        return { label: 'Google Slides', icon: '📽️' };
+      case 'drawing':
+        return { label: 'Drawing', icon: '🎨' };
+      case 'drive':
+        return { label: 'Drive File', icon: '📄' };
+      default:
+        return { label: 'File', icon: '📎' };
+    }
+  }
+
+  function updateSelectionUI() {
+    const selectedCount = attachmentsList.filter(f => f.selected).length;
+    const totalCount = attachmentsList.length;
+
+    elements.selectedStats.textContent = `${selectedCount} of ${totalCount} selected`;
+
+    if (selectedCount > 0) {
+      elements.downloadActionText.textContent = `Download Selected (${selectedCount})`;
+    } else {
+      elements.downloadActionText.textContent = totalCount > 0 ? `Download All Materials (${totalCount})` : 'Download All Materials';
+    }
+
+    elements.downloadActionBtn.disabled = totalCount === 0;
+    elements.zipActionBtn.disabled = totalCount === 0;
+  }
+
+  // --------------- Selection Actions ---------------
+  function syncFileSelection(fileId, selected) {
+    if (currentTabId) {
+      chrome.tabs.sendMessage(currentTabId, {
+        action: 'toggleFileSelect',
+        fileId,
+        selected,
+      }).catch(() => {});
+    }
+  }
+
+  async function triggerSingleDownload(file, btn) {
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = `<span style="font-size:11px">⏳</span>`;
+    btn.disabled = true;
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'downloadFile',
+        file,
+        tabId: currentTabId,
+      });
+
+      if (response?.success) {
+        btn.innerHTML = `✓`;
+        btn.style.color = 'var(--cd-success)';
+        setTimeout(() => {
+          btn.innerHTML = origHtml;
+          btn.style.color = '';
+          btn.disabled = false;
+          loadHistory();
+        }, 1500);
+      } else {
+        btn.innerHTML = `✗`;
+        btn.style.color = 'var(--cd-error)';
+        btn.title = `Error: ${response?.error || 'Download failed'}`;
+        setTimeout(() => {
+          btn.innerHTML = origHtml;
+          btn.style.color = '';
+          btn.disabled = false;
+        }, 2500);
+      }
+    } catch (err) {
+      btn.innerHTML = origHtml;
+      btn.disabled = false;
+    }
   }
 
   // --------------- Event Listeners ---------------
   function setupEventListeners() {
-    // Download All
-    elements.downloadAllBtn.addEventListener('click', () => {
-      if (!isClassroom) return;
-      sendToContent('triggerDownloadAll');
-      window.close();
+    // Search input
+    elements.fileSearchInput.addEventListener('input', (e) => {
+      filterQuery = e.target.value.trim();
+      elements.searchClearBtn.classList.toggle('cd-hidden', !filterQuery);
+      renderFilesList();
+    });
+
+    elements.searchClearBtn.addEventListener('click', () => {
+      elements.fileSearchInput.value = '';
+      filterQuery = '';
+      elements.searchClearBtn.classList.add('cd-hidden');
+      renderFilesList();
     });
 
     // Select All
-    elements.selectAllBtn.addEventListener('click', () => {
-      if (!isClassroom) return;
-      sendToContent('triggerSelectAll');
-      // Refresh info
-      setTimeout(async () => {
-        try {
-          const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getPageInfo' });
-          if (response) updatePageInfo(response);
-        } catch {}
-      }, 300);
+    elements.popupSelectAll.addEventListener('click', () => {
+      attachmentsList.forEach(f => f.selected = true);
+      renderFilesList();
+      updateSelectionUI();
+      if (currentTabId) {
+        chrome.tabs.sendMessage(currentTabId, { action: 'triggerSelectAll' }).catch(() => {});
+      }
     });
 
-    // Download Selected
-    elements.downloadSelectedBtn.addEventListener('click', () => {
-      if (!isClassroom) return;
-      sendToContent('triggerDownloadSelected');
+    // Deselect All
+    elements.popupDeselectAll.addEventListener('click', () => {
+      attachmentsList.forEach(f => f.selected = false);
+      renderFilesList();
+      updateSelectionUI();
+      if (currentTabId) {
+        chrome.tabs.sendMessage(currentTabId, { action: 'triggerDeselectAll' }).catch(() => {});
+      }
+    });
+
+    // Main Download Action Button (Downloads selected or all)
+    elements.downloadActionBtn.addEventListener('click', () => {
+      if (!isClassroom || !currentTabId) return;
+
+      const hasSelection = attachmentsList.some(f => f.selected);
+      const action = hasSelection ? 'triggerDownloadSelected' : 'triggerDownloadAll';
+      chrome.tabs.sendMessage(currentTabId, { action }).catch(() => {});
       window.close();
     });
 
-    // ZIP All
-    elements.zipAllBtn.addEventListener('click', () => {
-      if (!isClassroom) return;
-      sendToContent('triggerZipAll');
+    // Download as ZIP Button
+    elements.zipActionBtn.addEventListener('click', () => {
+      if (!isClassroom || !currentTabId) return;
+
+      const hasSelection = attachmentsList.some(f => f.selected);
+      const action = hasSelection ? 'triggerZipSelected' : 'triggerZipAll';
+      chrome.tabs.sendMessage(currentTabId, { action }).catch(() => {});
       window.close();
     });
 
-    // Scan
-    elements.scanBtn.addEventListener('click', async () => {
-      if (!isClassroom) return;
+    // Rescan Page Button
+    const handleRescan = async () => {
+      if (!isClassroom || !currentTabId) return;
       try {
+        elements.scanBtn.textContent = 'Scanning...';
         const response = await chrome.tabs.sendMessage(currentTabId, { action: 'scanPage' });
         if (response) {
-          elements.materialCount.textContent = response.totalAttachments;
+          attachmentsList = response.attachments || [];
+          elements.tabFilesBadge.textContent = attachmentsList.length;
+          renderFilesList();
+          updateSelectionUI();
         }
       } catch {}
-    });
+      elements.scanBtn.textContent = '🔍 Rescan';
+    };
 
-    // Tabs
+    elements.scanBtn.addEventListener('click', handleRescan);
+    elements.emptyRescanBtn?.addEventListener('click', handleRescan);
+
+    // Tab Navigation
     $$('.cd-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         $$('.cd-tab').forEach(t => t.classList.remove('cd-tab-active'));
         tab.classList.add('cd-tab-active');
 
         const panelName = tab.dataset.tab;
-        elements.historyPanel.style.display = panelName === 'history' ? 'block' : 'none';
-        elements.settingsPanel.style.display = panelName === 'settings' ? 'block' : 'none';
+        elements.filesPanel.style.display = panelName === 'files' ? 'flex' : 'none';
+        elements.historyPanel.style.display = panelName === 'history' ? 'flex' : 'none';
+        elements.settingsPanel.style.display = panelName === 'settings' ? 'flex' : 'none';
+
+        if (panelName === 'history') {
+          loadHistory();
+        }
       });
     });
 
@@ -187,12 +375,6 @@
 
     // Save Settings
     elements.saveSettingsBtn.addEventListener('click', saveSettings);
-  }
-
-  function sendToContent(action) {
-    if (currentTabId) {
-      chrome.tabs.sendMessage(currentTabId, { action }).catch(() => {});
-    }
   }
 
   // --------------- History ---------------
@@ -210,49 +392,45 @@
       const recent = history.slice(0, 50);
 
       for (const item of recent) {
-        const el = createHistoryItem(item);
-        elements.historyList.appendChild(el);
+        const div = document.createElement('div');
+        div.className = 'cd-history-item';
+
+        const typeIcons = {
+          drive: '📄',
+          doc: '📝',
+          sheet: '📊',
+          slide: '📽️',
+          drawing: '🎨',
+          direct: '📎',
+          zip: '📦',
+        };
+
+        const icon = typeIcons[item.type] || '📄';
+        const time = formatTime(item.timestamp);
+        const statusClass = item.status === 'completed' ? 'completed' : 'failed';
+
+        div.innerHTML = `
+          <span class="cd-history-icon">${icon}</span>
+          <div class="cd-history-info">
+            <div class="cd-history-name" title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)}</div>
+            <div class="cd-history-meta">${time}</div>
+          </div>
+          <span class="cd-history-status ${statusClass}">${item.status}</span>
+          ${item.status === 'failed' ? `<button class="cd-history-retry" data-id="${item.id}" title="Retry">↻</button>` : ''}
+        `;
+
+        const retryBtn = div.querySelector('.cd-history-retry');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', async () => {
+            retryBtn.textContent = '⏳';
+            await chrome.runtime.sendMessage({ action: 'retryDownload', fileId: item.id });
+            setTimeout(loadHistory, 1500);
+          });
+        }
+
+        elements.historyList.appendChild(div);
       }
     } catch {}
-  }
-
-  function createHistoryItem(item) {
-    const div = document.createElement('div');
-    div.className = 'cd-history-item';
-
-    const typeIcons = {
-      drive: '📄',
-      doc: '📝',
-      sheet: '📊',
-      slide: '📽️',
-      drawing: '🎨',
-      direct: '📎',
-      zip: '📦',
-    };
-
-    const icon = typeIcons[item.type] || '📄';
-    const time = formatTime(item.timestamp);
-    const statusClass = item.status === 'completed' ? 'completed' : 'failed';
-
-    div.innerHTML = `
-      <span class="cd-history-icon">${icon}</span>
-      <div class="cd-history-info">
-        <div class="cd-history-name" title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)}</div>
-        <div class="cd-history-meta">${time}</div>
-      </div>
-      <span class="cd-history-status ${statusClass}">${item.status}</span>
-      ${item.status === 'failed' ? `<button class="cd-history-retry" data-id="${item.id}" title="Retry">↻</button>` : ''}
-    `;
-
-    // Retry button handler
-    const retryBtn = div.querySelector('.cd-history-retry');
-    if (retryBtn) {
-      retryBtn.addEventListener('click', async () => {
-        await chrome.runtime.sendMessage({ action: 'retryDownload', fileId: item.id });
-      });
-    }
-
-    return div;
   }
 
   // --------------- Settings ---------------
@@ -261,30 +439,13 @@
       const response = await chrome.runtime.sendMessage({ action: 'getSettings' });
       const settings = response?.settings || {};
 
-      if (settings.defaultBehavior) {
-        $('#settingBehavior').value = settings.defaultBehavior;
-      }
-      if (settings.docExportFormat) {
-        $('#settingDocFormat').value = settings.docExportFormat;
-      }
-      if (settings.sheetExportFormat) {
-        $('#settingSheetFormat').value = settings.sheetExportFormat;
-      }
-      if (settings.slideExportFormat) {
-        $('#settingSlideFormat').value = settings.slideExportFormat;
-      }
-      if (settings.maxConcurrent) {
-        $('#settingConcurrent').value = settings.maxConcurrent.toString();
-      }
-      if (settings.preserveFolders !== undefined) {
-        $('#settingFolders').checked = settings.preserveFolders;
-      }
-      if (settings.skipDownloaded !== undefined) {
-        $('#settingSkipDownloaded').checked = settings.skipDownloaded;
-      }
-      if (settings.showNotifications !== undefined) {
-        $('#settingNotifications').checked = settings.showNotifications;
-      }
+      if (settings.defaultBehavior) $('#settingBehavior').value = settings.defaultBehavior;
+      if (settings.docExportFormat) $('#settingDocFormat').value = settings.docExportFormat;
+      if (settings.sheetExportFormat) $('#settingSheetFormat').value = settings.sheetExportFormat;
+      if (settings.slideExportFormat) $('#settingSlideFormat').value = settings.slideExportFormat;
+      if (settings.maxConcurrent) $('#settingConcurrent').value = settings.maxConcurrent.toString();
+      if (settings.preserveFolders !== undefined) $('#settingFolders').checked = settings.preserveFolders;
+      if (settings.showNotifications !== undefined) $('#settingNotifications').checked = settings.showNotifications;
       if (settings.theme) {
         $('#settingTheme').value = settings.theme;
         applyTheme(settings.theme);
@@ -300,7 +461,6 @@
       slideExportFormat: $('#settingSlideFormat').value,
       maxConcurrent: parseInt($('#settingConcurrent').value, 10),
       preserveFolders: $('#settingFolders').checked,
-      skipDownloaded: $('#settingSkipDownloaded').checked,
       showNotifications: $('#settingNotifications').checked,
       theme: $('#settingTheme').value,
     };
@@ -308,7 +468,6 @@
     await chrome.runtime.sendMessage({ action: 'saveSettings', settings });
     applyTheme(settings.theme);
 
-    // Flash save confirmation
     elements.saveSettingsBtn.textContent = '✓ Saved!';
     setTimeout(() => {
       elements.saveSettingsBtn.textContent = 'Save Settings';
@@ -322,15 +481,12 @@
     } else if (theme === 'dark') {
       document.body.classList.add('cd-theme-dark');
     }
-    // 'system' — no class, uses prefers-color-scheme
   }
 
   // --------------- Utilities ---------------
   function formatTime(timestamp) {
     if (!timestamp) return '';
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now - date;
+    const diffMs = Date.now() - timestamp;
     const diffMins = Math.floor(diffMs / 60000);
 
     if (diffMins < 1) return 'Just now';
@@ -339,15 +495,16 @@
     if (diffHours < 24) return `${diffHours}h ago`;
     const diffDays = Math.floor(diffHours / 24);
     if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    return new Date(timestamp).toLocaleDateString();
   }
 
   function escapeHtml(str) {
+    if (!str) return '';
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
   }
 
-  // --------------- Start ---------------
+  // --------------- Run ---------------
   init();
 })();
