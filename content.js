@@ -97,7 +97,7 @@
 
   // --------------- Attachment Detection ---------------
   function parseAttachmentLink(linkEl) {
-    let href = linkEl.href || linkEl.getAttribute('href') || '';
+    let href = linkEl.href || linkEl.getAttribute('href') || linkEl.getAttribute('data-url') || '';
     if (!href) return null;
 
     // Unpack Google Redirects if present
@@ -449,23 +449,21 @@
   // --------------- Expand All Assignments Feature ---------------
   function expandAllCoursework() {
     let count = 0;
-    const buttons = document.querySelectorAll(
-      '[aria-expanded="false"], div[role="button"][jsaction*="click"], .tLDEHd, li[role="listitem"]'
-    );
+    // Find coursework expand triggers while avoiding account menus and navigation bars
+    const buttons = document.querySelectorAll('[aria-expanded="false"]');
     buttons.forEach(el => {
-      if (el.getAttribute('aria-expanded') === 'false') {
-        el.click();
-        count++;
-      } else {
-        const inner = el.querySelector('[aria-expanded="false"]');
-        if (inner) {
-          inner.click();
-          count++;
-        }
+      if (el.closest('header, nav, [role="navigation"], [aria-label*="Google Account"], [aria-label*="Main menu"]')) {
+        return;
       }
+      el.click();
+      count++;
     });
 
-    showToast(`Expanded ${count} coursework items. Scanning...`, 'info');
+    if (count > 0) {
+      showToast(`Expanding ${count} coursework item(s)...`, 'info');
+    } else {
+      showToast('All coursework items are already expanded.', 'info');
+    }
     setTimeout(() => scanForAttachments(), 600);
     setTimeout(() => scanForAttachments(), 1500);
     return count;
@@ -685,17 +683,22 @@
     let url = file.url;
 
     if (file.type === 'drive' && file.fileId) {
-      url = `https://drive.google.com/uc?export=download&id=${file.fileId}&authuser=${authuser}&confirm=t`;
+      url = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authuser}&confirm=t`;
     } else if (file.type === 'doc' && file.fileId) {
-      url = `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authuser}`;
+      url = `https://docs.google.com/document/u/${authuser}/d/${file.fileId}/export?format=pdf`;
     } else if (file.type === 'sheet' && file.fileId) {
-      url = `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=xlsx&authuser=${authuser}`;
+      url = `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=xlsx`;
     } else if (file.type === 'slide' && file.fileId) {
-      url = `https://docs.google.com/presentation/d/${file.fileId}/export/pptx?authuser=${authuser}`;
+      url = `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/pptx`;
     }
 
     const response = await fetch(url, { credentials: 'include' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('text/html')) {
+      throw new Error('Access forbidden (403): Google returned an HTML page instead of file content.');
+    }
 
     const blob = await response.blob();
     return new Promise((resolve, reject) => {
@@ -727,8 +730,8 @@
   function scanForAttachments() {
     detectPageType();
 
-    // Query all anchors on the page
-    const links = document.querySelectorAll('a[href]');
+    // Query all anchors and data-url elements on the page
+    const links = document.querySelectorAll('a[href], [data-url*="drive.google.com"], [data-url*="docs.google.com"]');
     let newCount = 0;
     const detectedThisPass = [];
 

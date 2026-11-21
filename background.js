@@ -306,20 +306,12 @@ async function executeDownload(item) {
   }
 }
 
-// --------------- Robust Blob Fetcher ---------------
-// Fetches the file using credentials and handles Google Drive virus warnings,
-// multi-account authuser routing, and Google Docs/Sheets/Slides export endpoints.
+// --------------- Robust Blob Fetcher (for ZIP packaging) ---------------
 async function fetchFileBlob(file) {
-  const authuser = file.authuser || '0';
+  const authuser = file.authuser !== undefined ? file.authuser : '0';
   let initialUrl = getDownloadUrl(file);
 
-  // Append authuser if not already present
-  if (!initialUrl.includes('authuser=')) {
-    const sep = initialUrl.includes('?') ? '&' : '?';
-    initialUrl = `${initialUrl}${sep}authuser=${authuser}`;
-  }
-
-  console.log(`[Classroom Downloader ServiceWorker] 🚀 Fetching: "${file.fileName}"`, { url: initialUrl, authuser, type: file.type });
+  console.log(`[Classroom Downloader ServiceWorker] 🚀 Fetching for ZIP: "${file.fileName}"`, { url: initialUrl, authuser, type: file.type });
 
   let response = await fetch(initialUrl, {
     credentials: 'include',
@@ -336,58 +328,34 @@ async function fetchFileBlob(file) {
   // If response is HTML, Google Drive may be showing the "virus scan warning / confirm download" page
   if (contentType.includes('text/html')) {
     const htmlText = await response.text();
-
     let confirmUrl = null;
 
-    // 1. Check for standard download link: id="uc-download-link"
-    const linkMatch = htmlText.match(/id=["']uc-download-link["'][^>]*href=["']([^"']+)["']/i) ||
-                      htmlText.match(/href=["']([^"']*(?:drive\.usercontent\.google\.com\/download|uc\?export=download)[^"']*)["']/i);
-    if (linkMatch) {
-      let href = linkMatch[1].replace(/&amp;/g, '&');
-      if (href.startsWith('/')) {
-        href = 'https://drive.google.com' + href;
+    // 1. Check for form action: id="download-form"
+    const formMatch = htmlText.match(/<form[^>]*action=["']([^"']+)["'][^>]*>([\s\S]*?)<\/form>/i);
+    if (formMatch) {
+      let action = formMatch[1].replace(/&amp;/g, '&');
+      const formBody = formMatch[2];
+      const params = new URLSearchParams();
+      const inputRegex = /<input[^>]*name=["']([^"']+)["'][^>]*value=["']([^"']*)["'][^>]*>/gi;
+      let m;
+      while ((m = inputRegex.exec(formBody)) !== null) {
+        params.set(m[1], m[2]);
       }
-      confirmUrl = href;
-    }
-
-    // 2. Check for form action: id="download-form"
-    if (!confirmUrl) {
-      const formMatch = htmlText.match(/<form[^>]*action=["']([^"']+)["'][^>]*>([\s\S]*?)<\/form>/i);
-      if (formMatch) {
-        let action = formMatch[1].replace(/&amp;/g, '&');
-        const formBody = formMatch[2];
-        const params = new URLSearchParams();
-        const inputRegex = /<input[^>]*name=["']([^"']+)["'][^>]*value=["']([^"']*)["'][^>]*>/gi;
-        let m;
-        while ((m = inputRegex.exec(formBody)) !== null) {
-          params.set(m[1], m[2]);
-        }
-        if (params.toString()) {
-          const sep = action.includes('?') ? '&' : '?';
-          confirmUrl = `${action}${sep}${params.toString()}`;
-        }
+      if (params.toString()) {
+        const sep = action.includes('?') ? '&' : '?';
+        confirmUrl = `${action}${sep}${params.toString()}&authuser=${authuser}`;
       }
     }
 
-    // 3. Check for confirmation token in HTML
+    // 2. Check for standard confirmation token in HTML
     if (!confirmUrl && file.fileId) {
       const tokenMatch = htmlText.match(/confirm=([a-zA-Z0-9_-]+)/);
       if (tokenMatch) {
-        confirmUrl = `https://drive.google.com/uc?export=download&id=${file.fileId}&confirm=${tokenMatch[1]}&authuser=${authuser}`;
+        confirmUrl = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&confirm=${tokenMatch[1]}&authuser=${authuser}`;
       }
-    }
-
-    // 4. Try direct usercontent download URL as fallback
-    if (!confirmUrl && file.fileId) {
-      confirmUrl = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&confirm=t&authuser=${authuser}`;
     }
 
     if (confirmUrl) {
-      if (!confirmUrl.includes('authuser=')) {
-        const sep = confirmUrl.includes('?') ? '&' : '?';
-        confirmUrl = `${confirmUrl}${sep}authuser=${authuser}`;
-      }
-
       response = await fetch(confirmUrl, {
         credentials: 'include',
         headers: { 'Accept': '*/*' },
@@ -395,26 +363,19 @@ async function fetchFileBlob(file) {
 
       contentType = (response.headers.get('content-type') || '').toLowerCase();
       if (contentType.includes('text/html')) {
-        const errorText = await response.text();
-        if (errorText.includes('ServiceLogin') || errorText.includes('accounts.google.com') || errorText.includes('403') || errorText.includes('Forbidden')) {
-          throw new Error('Access forbidden (403). Make sure you are signed in with the school account that has access.');
-        }
-        throw new Error('Google Drive returned an HTML page instead of file content.');
+        throw new Error('Access forbidden (403): Google returned an HTML login or permission error page.');
       }
     } else {
-      if (htmlText.includes('ServiceLogin') || htmlText.includes('accounts.google.com') || htmlText.includes('403') || htmlText.includes('Forbidden')) {
-        throw new Error('Access forbidden (403). Please verify account authorization.');
-      }
-      throw new Error('File download resulted in an HTML page (not a downloadable binary).');
+      throw new Error('Access forbidden (403): Google returned an HTML page instead of file content.');
     }
   }
 
   const blob = await response.blob();
 
   // Validate that the binary is not an HTML error document disguised with a different mime-type
-  if (blob.size < 5000) {
-    const sample = await blob.slice(0, 200).text();
-    if (sample.trim().toLowerCase().startsWith('<!doctype html') || sample.includes('<html')) {
+  if (blob.size < 4000) {
+    const sample = await blob.slice(0, 100).text();
+    if (sample.toLowerCase().includes('<!doctype html') || sample.toLowerCase().includes('<html')) {
       throw new Error('Access forbidden: Google returned an HTML login or error page.');
     }
   }
@@ -435,7 +396,6 @@ async function fetchFileBlobWithFallback(file, tabId) {
           file,
         });
         if (tabResponse?.success && tabResponse.dataUrl) {
-          // Convert dataUrl back to blob
           const res = await fetch(tabResponse.dataUrl);
           return await res.blob();
         }
@@ -451,71 +411,117 @@ async function fetchFileBlobWithFallback(file, tabId) {
 async function downloadFile(file, tabId) {
   const fileName = buildFileName(file);
   const downloadIdKey = file.id || generateId();
+  const downloadUrl = getDownloadUrl(file);
 
-  console.log(`[Classroom Downloader ServiceWorker] 💾 Processing download: "${fileName}" (ID: ${downloadIdKey})`);
+  console.log(`[Classroom Downloader ServiceWorker] 💾 Processing download: "${fileName}" (ID: ${downloadIdKey})`, {
+    type: file.type,
+    fileId: file.fileId,
+    authuser: file.authuser,
+    url: downloadUrl,
+  });
 
-  try {
-    // 1. Fetch the real binary blob
-    const blob = await fetchFileBlobWithFallback(file, tabId);
-    console.log(`[Classroom Downloader ServiceWorker] 📦 Blob received: ${blob.size} bytes, type: ${blob.type}`);
-
-    // 2. Convert blob to Data URL to bypass Chrome's unauthenticated download manager
-    const dataUrl = await blobToDataUrl(blob);
-
-    // 3. Initiate Chrome download with Data URL
-    return new Promise((resolve, reject) => {
-      chrome.downloads.download(
-        {
-          url: dataUrl,
-          filename: fileName,
-          conflictAction: 'uniquify',
-        },
-        (downloadId) => {
-          if (chrome.runtime.lastError) {
-            const error = chrome.runtime.lastError.message;
-            console.error(`[Classroom Downloader ServiceWorker] ❌ chrome.downloads.download error:`, error);
-            addToHistory({
-              id: downloadIdKey,
-              fileName: file.fileName,
-              url: file.url,
-              type: file.type,
-              fileId: file.fileId,
-              status: 'failed',
-              error: error,
-              timestamp: Date.now(),
-            });
-            reject(new Error(error));
-          } else {
-            console.log(`[Classroom Downloader ServiceWorker] ✅ Download triggered successfully (ID: ${downloadId})`);
-            addToHistory({
-              id: downloadIdKey,
-              fileName: file.fileName,
-              url: file.url,
-              type: file.type,
-              fileId: file.fileId,
-              status: 'completed',
-              downloadId: downloadId,
-              timestamp: Date.now(),
-            });
-            resolve({ downloadId });
-          }
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(
+      {
+        url: downloadUrl,
+        filename: fileName,
+        conflictAction: 'uniquify',
+        saveAs: false,
+      },
+      (downloadId) => {
+        if (chrome.runtime.lastError) {
+          const errorMsg = chrome.runtime.lastError.message;
+          console.error(`[Classroom Downloader ServiceWorker] ❌ chrome.downloads.download error:`, errorMsg);
+          addToHistory({
+            id: downloadIdKey,
+            fileName: file.fileName,
+            url: file.url,
+            type: file.type,
+            fileId: file.fileId,
+            authuser: file.authuser,
+            status: 'failed',
+            error: errorMsg,
+            timestamp: Date.now(),
+          });
+          reject(new Error(errorMsg));
+          return;
         }
-      );
-    });
-  } catch (error) {
-    console.error(`[Classroom Downloader ServiceWorker] ❌ Failed to download "${file.fileName}":`, error.message);
-    addToHistory({
-      id: downloadIdKey,
-      fileName: file.fileName,
-      url: file.url,
-      type: file.type,
-      fileId: file.fileId,
-      status: 'failed',
-      error: error.message,
-      timestamp: Date.now(),
-    });
-    throw error;
-  }
+
+        console.log(`[Classroom Downloader ServiceWorker] ✅ Download initiated (ID: ${downloadId})`);
+
+        // Watch for completion or HTML error page detection
+        const onChangedListener = (delta) => {
+          if (delta.id !== downloadId) return;
+
+          if (delta.error) {
+            chrome.downloads.onChanged.removeListener(onChangedListener);
+            const err = delta.error.current;
+            console.error(`[Classroom Downloader ServiceWorker] Download error:`, err);
+            addToHistory({
+              id: downloadIdKey,
+              fileName: file.fileName,
+              url: file.url,
+              type: file.type,
+              fileId: file.fileId,
+              authuser: file.authuser,
+              status: 'failed',
+              error: `Download failed: ${err}`,
+              timestamp: Date.now(),
+            });
+            reject(new Error(`Download failed: ${err}`));
+          } else if (delta.state && delta.state.current === 'complete') {
+            chrome.downloads.onChanged.removeListener(onChangedListener);
+
+            // Verify MIME type to ensure it isn't an HTML error/login page
+            chrome.downloads.search({ id: downloadId }, (items) => {
+              const item = items && items[0];
+              const mime = (item?.mime || '').toLowerCase();
+              const isHtml = mime.includes('text/html');
+
+              if (isHtml && !fileName.endsWith('.html') && !fileName.endsWith('.htm')) {
+                console.warn(`[Classroom Downloader] Downloaded file is HTML (auth/permission failure), removing invalid file.`);
+                chrome.downloads.erase({ id: downloadId });
+                const errorMsg = `Access Forbidden (403): Google returned an HTML page. Please verify your account authorization (/u/${file.authuser || '0'}/).`;
+                addToHistory({
+                  id: downloadIdKey,
+                  fileName: file.fileName,
+                  url: file.url,
+                  type: file.type,
+                  fileId: file.fileId,
+                  authuser: file.authuser,
+                  status: 'failed',
+                  error: errorMsg,
+                  timestamp: Date.now(),
+                });
+                reject(new Error(errorMsg));
+              } else {
+                addToHistory({
+                  id: downloadIdKey,
+                  fileName: file.fileName,
+                  url: file.url,
+                  type: file.type,
+                  fileId: file.fileId,
+                  authuser: file.authuser,
+                  status: 'completed',
+                  downloadId: downloadId,
+                  timestamp: Date.now(),
+                });
+                resolve({ downloadId });
+              }
+            });
+          }
+        };
+
+        chrome.downloads.onChanged.addListener(onChangedListener);
+
+        // Fallback timeout to unregister listener after 30s
+        setTimeout(() => {
+          chrome.downloads.onChanged.removeListener(onChangedListener);
+          resolve({ downloadId });
+        }, 30000);
+      }
+    );
+  });
 }
 
 // --------------- URL Builders ---------------
@@ -527,19 +533,19 @@ function getDownloadUrl(file) {
 
   switch (file.type) {
     case 'drive':
-      return `https://drive.google.com/uc?export=download&id=${file.fileId}&confirm=t&authuser=${auth}`;
+      return `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${auth}&confirm=t`;
 
     case 'doc':
-      return `https://docs.google.com/document/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}&authuser=${auth}`;
+      return `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}`;
 
     case 'sheet':
-      return `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}&authuser=${auth}`;
+      return `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}`;
 
     case 'slide':
-      return `https://docs.google.com/presentation/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}?authuser=${auth}`;
+      return `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}`;
 
     case 'drawing':
-      return `https://docs.google.com/drawings/d/${file.fileId}/export/png?authuser=${auth}`;
+      return `https://docs.google.com/drawings/u/${auth}/d/${file.fileId}/export/png`;
 
     case 'direct':
     default:

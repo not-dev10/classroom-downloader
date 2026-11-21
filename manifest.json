@@ -7,13 +7,15 @@
     "activeTab",
     "downloads",
     "contextMenus",
-    "storage"
+    "storage",
+    "cookies"
   ],
   "host_permissions": [
     "https://classroom.google.com/*",
     "https://drive.google.com/*",
     "https://docs.google.com/*",
-    "https://*.googleusercontent.com/*"
+    "https://*.googleusercontent.com/*",
+    "https://*.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"
