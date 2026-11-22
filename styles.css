@@ -375,3 +375,24 @@
   color: white;
 }
 
+/* --------------- Print / Save as PDF Styles (Ctrl+P) --------------- */
+.cd-fab-btn.cd-print-pdf-btn {
+  background: rgba(234, 67, 53, 0.12);
+  color: #ea4335;
+  border-color: rgba(234, 67, 53, 0.3);
+}
+
+.cd-fab-btn.cd-print-pdf-btn:hover {
+  background: rgba(234, 67, 53, 0.22);
+}
+
+@media print {
+  /* Hide all extension injected controls when printing to PDF */
+  .cd-controls,
+  .cd-floating-bar,
+  .cd-toast,
+  .cd-progress-overlay {
+    display: none !important;
+  }
+}
+

@@ -395,6 +395,15 @@ body {
   text-decoration: underline;
 }
 
+.cd-pdf-btn {
+  color: #ea4335 !important;
+  font-weight: 600 !important;
+}
+
+.cd-pdf-btn:hover {
+  text-decoration: underline;
+}
+
 .cd-empty-actions {
   display: flex;
   gap: 8px;

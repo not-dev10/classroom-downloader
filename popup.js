@@ -24,6 +24,8 @@
     popupDeselectAll: $('#popupDeselectAll'),
     expandAllBtn: $('#expandAllBtn'),
     emptyExpandBtn: $('#emptyExpandBtn'),
+    printPdfBtn: $('#printPdfBtn'),
+    printPdfActionBtn: $('#printPdfActionBtn'),
     selectedStats: $('#selectedStats'),
     filesList: $('#filesList'),
     filesEmptyState: $('#filesEmptyState'),
@@ -200,7 +202,7 @@
       row.className = `cd-file-row ${file.selected ? 'cd-selected-row' : ''}`;
       row.setAttribute('data-id', file.id);
 
-      const typeMeta = getTypeMetadata(file.type);
+      const typeMeta = getTypeMetadata(file.type, file.fileName);
 
       row.innerHTML = `
         <label class="cd-file-check-label" title="Select for bulk download">
@@ -246,7 +248,17 @@
     });
   }
 
-  function getTypeMetadata(type) {
+  function getTypeMetadata(type, fileName = '') {
+    const fn = (fileName || '').toLowerCase();
+    if (fn.endsWith('.pdf')) return { label: 'PDF Document (.pdf)', icon: '📕' };
+    if (fn.endsWith('.pptx') || fn.endsWith('.ppt')) return { label: 'PowerPoint (.pptx)', icon: '📽️' };
+    if (fn.endsWith('.docx') || fn.endsWith('.doc')) return { label: 'Word Document (.docx)', icon: '📝' };
+    if (fn.endsWith('.xlsx') || fn.endsWith('.xls')) return { label: 'Excel Spreadsheet (.xlsx)', icon: '📊' };
+    if (fn.endsWith('.csv')) return { label: 'CSV Spreadsheet (.csv)', icon: '📑' };
+    if (fn.endsWith('.zip') || fn.endsWith('.rar') || fn.endsWith('.7z')) return { label: 'Archive (.zip)', icon: '📦' };
+    if (fn.endsWith('.txt')) return { label: 'Text Document (.txt)', icon: '📄' };
+    if (fn.endsWith('.png') || fn.endsWith('.jpg') || fn.endsWith('.jpeg')) return { label: 'Image', icon: '🖼️' };
+
     switch (type) {
       case 'doc':
         return { label: 'Google Doc', icon: '📝' };
@@ -426,6 +438,15 @@
     // Rescan Page Button
     elements.scanBtn.addEventListener('click', handleRescan);
     elements.emptyRescanBtn?.addEventListener('click', handleRescan);
+
+    // Print / Save Page as PDF (Ctrl+P)
+    function handlePrintPdf() {
+      if (!isClassroom || !currentTabId) return;
+      chrome.tabs.sendMessage(currentTabId, { action: 'triggerPrintPage' }).catch(() => {});
+      window.close();
+    }
+    elements.printPdfBtn?.addEventListener('click', handlePrintPdf);
+    elements.printPdfActionBtn?.addEventListener('click', handlePrintPdf);
 
     // Tab Navigation
     $$('.cd-tab').forEach(tab => {

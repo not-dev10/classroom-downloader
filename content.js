@@ -261,7 +261,7 @@
     const sessionUser = getClassroomSessionUser();
     const authuser = sessionUser.effectiveAuth;
 
-    const fileName = extractFileName(linkEl, type);
+    const { name: fileName, detectedExt } = extractFileName(linkEl, type);
     const id = fileId || generateId();
 
     return {
@@ -270,14 +270,18 @@
       fileId,
       url: href,
       fileName,
+      detectedExt,
       authuser,
       userEmail: sessionUser.email,
       linkElement: linkEl,
     };
   }
 
+  const COMMON_EXT_REGEX = /\.(pdf|pptx?|docx?|xlsx?|csv|txt|rtf|odt|ods|odp|zip|rar|7z|tar|gz|png|jpe?g|gif|bmp|svg|webp|mp[34]|wav|avi|mov|mkv)$/i;
+
   function extractFileName(linkEl, type) {
     let name = '';
+    let detectedExt = '';
 
     // Check aria-label
     const aria = linkEl.getAttribute('aria-label') || linkEl.title || '';
@@ -313,18 +317,46 @@
       name = linkEl.textContent?.trim()?.substring(0, 100) || '';
     }
 
-    // Clean up name
+    // Check if name already has an extension
+    const existingExtMatch = name.match(COMMON_EXT_REGEX);
+    if (existingExtMatch) {
+      detectedExt = existingExtMatch[1].toLowerCase();
+    } else {
+      // Look for format indicators in card or aria
+      const contextText = (aria + ' ' + (linkEl.closest('[class*="attachment"], div[role="listitem"]')?.textContent || '')).toLowerCase();
+      if (contextText.includes('powerpoint') || contextText.includes('presentation')) detectedExt = 'pptx';
+      else if (contextText.includes('word') || contextText.includes('document')) detectedExt = 'docx';
+      else if (contextText.includes('excel') || contextText.includes('spreadsheet')) detectedExt = 'xlsx';
+      else if (contextText.includes('pdf')) detectedExt = 'pdf';
+      else if (contextText.includes('csv')) detectedExt = 'csv';
+      else if (contextText.includes('zip') || contextText.includes('archive')) detectedExt = 'zip';
+    }
+
+    // Clean up name without destroying the extension
     name = name
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/\s+/g, ' ')
-      .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|PDF|Word|PowerPoint|Excel)\b/gi, '')
+      .replace(/^(?:Google Drive|Google Docs|Google Sheets|Google Slides)\s*[-:]?\s*/i, '')
+      .replace(/,\s*(?:PowerPoint|Word|Excel|PDF|CSV|Google (?:Docs|Drive|Sheets|Slides))\s*$/i, '')
       .replace(/:\s*$/, '')
-      .trim()
-      .replace(/[.\s]+$/, '');  // Strip trailing dots/spaces (Windows rejects these)
+      .trim();
+
+    // If name doesn't have the extension attached, attach it
+    if (detectedExt && !name.toLowerCase().endsWith('.' + detectedExt)) {
+      name = name.replace(/[.\s]+$/, '') + '.' + detectedExt;
+    } else {
+      // Strip trailing dots/spaces from stem while preserving extension
+      const m = name.match(/^(.+?)(\.[a-zA-Z0-9]{1,10})$/);
+      if (m) {
+        name = m[1].replace(/[.\s]+$/, '').trim() + m[2].toLowerCase();
+      } else {
+        name = name.replace(/[.\s]+$/, '').trim();
+      }
+    }
 
     if (!name || name.length < 2) {
       const typeNames = {
-        drive: 'Drive File',
+        drive: detectedExt ? `File.${detectedExt}` : 'Drive File',
         doc: 'Google Doc',
         sheet: 'Google Sheet',
         slide: 'Google Slides',
@@ -334,7 +366,7 @@
       name = typeNames[type] || 'Attachment';
     }
 
-    return name;
+    return { name, detectedExt };
   }
 
   function getAttachmentContext(linkEl) {
@@ -461,6 +493,9 @@
         <button class="cd-fab-btn cd-zip-selected-btn" title="Download as ZIP">
           ${ICONS.zip} ZIP
         </button>
+        <button class="cd-fab-btn cd-print-pdf-btn" title="Save page/assignment as PDF (Ctrl+P)">
+          🖨️ Save as PDF (Ctrl+P)
+        </button>
         <button class="cd-fab-btn cd-close-bar-btn" title="Close">${ICONS.close}</button>
       </div>
     `;
@@ -469,6 +504,7 @@
     floatingBar.querySelector('.cd-deselect-btn').addEventListener('click', deselectAll);
     floatingBar.querySelector('.cd-download-selected-btn').addEventListener('click', downloadSelected);
     floatingBar.querySelector('.cd-zip-selected-btn').addEventListener('click', zipSelected);
+    floatingBar.querySelector('.cd-print-pdf-btn').addEventListener('click', triggerPrintPage);
     floatingBar.querySelector('.cd-close-bar-btn').addEventListener('click', deselectAll);
 
     document.body.appendChild(floatingBar);
@@ -803,6 +839,27 @@
   }
 
   // --------------- In-Tab Fetch Handler ---------------
+  const IN_TAB_MIMES = {
+    'application/pdf': 'pdf',
+    'presentationml.presentation': 'pptx',
+    'ms-powerpoint': 'ppt',
+    'wordprocessingml.document': 'docx',
+    'msword': 'doc',
+    'spreadsheetml.sheet': 'xlsx',
+    'ms-excel': 'xls',
+    'text/csv': 'csv',
+    'application/csv': 'csv',
+    'text/plain': 'txt',
+    'zip': 'zip',
+    'rar': 'rar',
+    '7z': '7z',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/svg+xml': 'svg',
+    'video/mp4': 'mp4',
+    'audio/mpeg': 'mp3',
+  };
+
   async function fetchFileInTab(file) {
     const authuser = file.authuser || getAuthUser();
     const isEmail = typeof authuser === 'string' && authuser.includes('@');
@@ -878,11 +935,37 @@
           }
         }
 
-        console.log(`[CD Content] ✅ In-tab fetch succeeded: ${blob.size} bytes, MIME: ${blob.type}`);
+        // Extract filename and mime from headers
+        let cd = response.headers.get('content-disposition') || '';
+        let serverFilename = null;
+        const utf8M = cd.match(/filename\*=UTF-8''([^;\r\n]+)/i);
+        if (utf8M) {
+          try { serverFilename = decodeURIComponent(utf8M[1]).replace(/["']/g, '').trim(); } catch {}
+        }
+        if (!serverFilename) {
+          const stdM = cd.match(/filename=["']?([^"';\r\n]+)["']?/i);
+          if (stdM) serverFilename = stdM[1].replace(/["']/g, '').trim();
+        }
+
+        let mimeExt = null;
+        for (const [k, ext] of Object.entries(IN_TAB_MIMES)) {
+          if (contentType.includes(k)) {
+            mimeExt = ext;
+            break;
+          }
+        }
+
+        console.log(`[CD Content] ✅ In-tab fetch succeeded: ${blob.size} bytes, MIME: ${contentType}, serverFilename: ${serverFilename}, mimeExt: ${mimeExt}`);
 
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
+          reader.onloadend = () => resolve({
+            success: true,
+            dataUrl: reader.result,
+            serverFilename,
+            mimeExt,
+            size: blob.size,
+          });
           reader.onerror = reject;
           reader.readAsDataURL(blob);
         });
@@ -893,6 +976,16 @@
     }
 
     throw lastError || new Error('All in-tab fetch attempts failed');
+  }
+
+  // --------------- Print / Save as PDF Feature (Ctrl+P) ---------------
+  function triggerPrintPage() {
+    showToast('Preparing page for Save as PDF (Ctrl+P)...', 'info');
+    // Ensure all coursework accordion items are expanded so full instructions are visible
+    expandAllCoursework();
+    setTimeout(() => {
+      window.print();
+    }, 400);
   }
 
   // --------------- Toast Notifications ---------------
@@ -1063,6 +1156,11 @@
         case 'triggerExpandAll':
           const count = expandAllCoursework();
           sendResponse({ success: true, count });
+          return false;
+
+        case 'triggerPrintPage':
+          triggerPrintPage();
+          sendResponse({ success: true });
           return false;
 
         case 'triggerDownloadAll':

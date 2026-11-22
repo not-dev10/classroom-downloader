@@ -371,7 +371,57 @@ async function executeDownload(item) {
   }
 }
 
-// --------------- Robust Blob Fetcher (for ZIP packaging) ---------------
+// --------------- MIME Types & Extension Mapping ---------------
+const MIME_TO_EXT = {
+  'application/pdf': 'pdf',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'text/csv': 'csv',
+  'application/csv': 'csv',
+  'text/comma-separated-values': 'csv',
+  'text/plain': 'txt',
+  'application/zip': 'zip',
+  'application/x-zip-compressed': 'zip',
+  'application/x-rar-compressed': 'rar',
+  'application/vnd.rar': 'rar',
+  'application/x-7z-compressed': '7z',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/svg+xml': 'svg',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+};
+
+function getExtensionFromMime(mimeType) {
+  if (!mimeType) return null;
+  const clean = mimeType.split(';')[0].trim().toLowerCase();
+  return MIME_TO_EXT[clean] || null;
+}
+
+function parseFilenameFromContentDisposition(header) {
+  if (!header) return null;
+  // Try RFC 5987 / 6266 UTF-8 encoded filename*
+  const utf8Match = header.match(/filename\*=UTF-8''([^;\r\n]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]).replace(/["']/g, '').trim();
+    } catch {}
+  }
+  // Try standard filename="..."
+  const standardMatch = header.match(/filename=["']?([^"';\r\n]+)["']?/i);
+  if (standardMatch) {
+    return standardMatch[1].replace(/["']/g, '').trim();
+  }
+  return null;
+}
 async function fetchFileBlob(file) {
   const authuser = file.authuser !== undefined ? file.authuser : '0';
   let initialUrl = getDownloadUrl(file);
@@ -447,7 +497,11 @@ async function fetchFileBlob(file) {
   }
 
   const blob = await response.blob();
-  console.log(`[CD] ✅ Blob received: size=${blob.size}, type=${blob.type}`);
+  const cd = response.headers.get('content-disposition');
+  blob.serverFilename = parseFilenameFromContentDisposition(cd);
+  blob.mimeExt = getExtensionFromMime(contentType);
+
+  console.log(`[CD] ✅ Blob received: size=${blob.size}, type=${blob.type}, serverFilename=${blob.serverFilename}, mimeExt=${blob.mimeExt}`);
 
   // Validate that the binary is not an HTML error document disguised with a different mime-type
   if (blob.size < 4000) {
@@ -556,7 +610,7 @@ async function downloadFile(file, tabId) {
 }
 
 // Strategy: Tab Fetch (fetch binary data in the authenticated tab context)
-async function attemptTabFetchDownload(file, fileName, downloadIdKey, tabId) {
+async function attemptTabFetchDownload(file, initialFileName, downloadIdKey, tabId) {
   const tabResponse = await chrome.tabs.sendMessage(tabId, {
     action: 'fetchFileInTab',
     file,
@@ -565,6 +619,9 @@ async function attemptTabFetchDownload(file, fileName, downloadIdKey, tabId) {
   if (!tabResponse?.success || !tabResponse.dataUrl) {
     throw new Error(tabResponse?.error || 'Tab fetch returned no binary data');
   }
+
+  // Refine filename using serverFilename and mimeExt returned from tab
+  const fileName = buildFileName(file, tabResponse.serverFilename, tabResponse.mimeExt);
 
   logMsg(tabId, 'info', `💾 Tab received file data (${Math.round(tabResponse.dataUrl.length * 0.75 / 1024)} KB). Saving to disk as "${fileName}"...`);
 
@@ -582,7 +639,7 @@ async function attemptTabFetchDownload(file, fileName, downloadIdKey, tabId) {
       } else {
         logMsg(tabId, 'info', `✅ Download saved! Chrome download ID: ${downloadId}`);
         addToHistory({
-          id: downloadIdKey, fileName: file.fileName, url: file.url,
+          id: downloadIdKey, fileName, url: file.url,
           type: file.type, fileId: file.fileId, authuser: file.authuser,
           status: 'completed', downloadId, timestamp: Date.now(),
         });
@@ -593,9 +650,12 @@ async function attemptTabFetchDownload(file, fileName, downloadIdKey, tabId) {
 }
 
 // Strategy: Service Worker Fetch with credentials
-async function attemptServiceWorkerFetchDownload(file, fileName, downloadIdKey, tabId) {
+async function attemptServiceWorkerFetchDownload(file, initialFileName, downloadIdKey, tabId) {
   const blob = await fetchFileBlob(file);
   const dataUrl = await blobToDataUrl(blob);
+
+  // Refine filename using serverFilename and mimeExt from blob
+  const fileName = buildFileName(file, blob.serverFilename, blob.mimeExt);
 
   logMsg(tabId, 'info', `💾 Service worker fetched ${blob.size} bytes. Saving to disk as "${fileName}"...`);
 
@@ -613,7 +673,7 @@ async function attemptServiceWorkerFetchDownload(file, fileName, downloadIdKey, 
       } else {
         logMsg(tabId, 'info', `✅ Download saved! Chrome download ID: ${downloadId}`);
         addToHistory({
-          id: downloadIdKey, fileName: file.fileName, url: file.url,
+          id: downloadIdKey, fileName, url: file.url,
           type: file.type, fileId: file.fileId, authuser: file.authuser,
           status: 'completed', downloadId, timestamp: Date.now(),
         });
@@ -707,51 +767,57 @@ function getDownloadUrl(file) {
   }
 }
 
-function buildFileName(file) {
+function buildFileName(file, serverFilename = null, mimeExt = null) {
   const settings = state.settings || DEFAULT_SETTINGS;
   const rawName = file.fileName || 'untitled';
   let name = sanitizeFileName(rawName);
 
-  console.log(`[CD] 🏗️ buildFileName: raw="${rawName}" → sanitized="${name}" (type=${file.type})`);
+  console.log(`[CD] 🏗️ buildFileName: raw="${rawName}" → sanitized="${name}" (type=${file.type}, serverFilename=${serverFilename}, mimeExt=${mimeExt})`);
 
-  // Add extension if missing for exported Google Workspace files
-  if (file.type === 'doc' && !name.match(/\.(pdf|docx|odt|rtf|txt|html|epub)$/i)) {
-    name += '.' + (settings.docExportFormat || 'pdf');
-    console.log(`[CD] 🏗️ buildFileName: added doc extension → "${name}"`);
-  } else if (file.type === 'sheet' && !name.match(/\.(xlsx|csv|pdf|ods|tsv)$/i)) {
-    name += '.' + (settings.sheetExportFormat || 'xlsx');
-    console.log(`[CD] 🏗️ buildFileName: added sheet extension → "${name}"`);
-  } else if (file.type === 'slide' && !name.match(/\.(pptx|pdf|odp)$/i)) {
-    name += '.' + (settings.slideExportFormat || 'pptx');
-    console.log(`[CD] 🏗️ buildFileName: added slide extension → "${name}"`);
-  } else if (file.type === 'drawing' && !name.match(/\.(png|svg|pdf|jpg|jpeg)$/i)) {
-    name += '.png';
-    console.log(`[CD] 🏗️ buildFileName: added drawing extension → "${name}"`);
+  // Check if current name already has a recognized extension
+  const existingExtMatch = name.match(/\.([a-zA-Z0-9]{1,10})$/i);
+  let ext = existingExtMatch ? existingExtMatch[1].toLowerCase() : null;
+
+  // If no extension, determine the best extension from server/detected/types
+  if (!ext) {
+    if (serverFilename) {
+      const serverMatch = serverFilename.match(/\.([a-zA-Z0-9]{1,10})$/i);
+      if (serverMatch) ext = serverMatch[1].toLowerCase();
+    }
+    if (!ext && mimeExt) {
+      ext = mimeExt.toLowerCase();
+    }
+    if (!ext && file.detectedExt) {
+      ext = file.detectedExt.toLowerCase();
+    }
+    if (!ext) {
+      if (file.type === 'doc') ext = (settings.docExportFormat || 'pdf').toLowerCase();
+      else if (file.type === 'sheet') ext = (settings.sheetExportFormat || 'xlsx').toLowerCase();
+      else if (file.type === 'slide') ext = (settings.slideExportFormat || 'pptx').toLowerCase();
+      else if (file.type === 'drawing') ext = 'png';
+    }
+
+    if (ext) {
+      name += '.' + ext;
+      console.log(`[CD] 🏗️ buildFileName: attached extension .${ext} → "${name}"`);
+    }
   }
 
-  // For drive files without any extension, don't add one (Chrome will get it from Content-Disposition)
-  // But ensure the name is valid
-  if (!name || name === 'untitled') {
-    name = 'untitled';
-  }
-
-  // Final safety: strip any trailing dots/spaces from the full name (before extension)
-  // This handles edge cases like "Pharmacy Management System SE." -> "Pharmacy Management System SE"
+  // Final safety: sanitize stem and extension
   const extMatch = name.match(/^(.+?)(\.[a-zA-Z0-9]{1,10})$/);
   if (extMatch) {
-    // Has extension — sanitize the stem only
-    let stem = extMatch[1].replace(/[.\s]+$/, '');
-    name = (stem || 'untitled') + extMatch[2];
+    let stem = extMatch[1].replace(/[.\s]+$/, '').trim() || 'untitled';
+    let fileExt = extMatch[2].toLowerCase();
+    name = stem + fileExt;
   } else {
-    // No extension — strip trailing dots
-    name = name.replace(/[.\s]+$/, '') || 'untitled';
+    name = name.replace(/[.\s]+$/, '').trim() || 'untitled';
   }
 
   // Build folder path if requested
   if (settings.preserveFolders && file.folderPath) {
     const folderPath = sanitizePath(file.folderPath);
     const fullPath = folderPath ? folderPath + '/' + name : name;
-    console.log(`[CD] 🏗️ buildFileName: final path="${fullPath}" (preserveFolders=true, folder="${file.folderPath}")`);
+    console.log(`[CD] 🏗️ buildFileName: final path="${fullPath}" (preserveFolders=true)`);
     return fullPath;
   }
 
