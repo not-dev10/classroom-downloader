@@ -568,6 +568,35 @@ body {
   transform: scale(0.92);
 }
 
+.cd-file-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.cd-file-pdf-btn {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid rgba(234, 67, 53, 0.35);
+  background: rgba(234, 67, 53, 0.08);
+  color: #ea4335;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.cd-file-pdf-btn:hover {
+  background: rgba(234, 67, 53, 0.2);
+  border-color: #ea4335;
+}
+
 /* --------------- Files Footer --------------- */
 .cd-files-footer {
   padding: 10px 14px;

@@ -471,9 +471,57 @@
       downloadSingleFile(attachment);
     });
 
+    // Save as PDF (Ctrl+P) quick button
+    const pdfBtn = document.createElement('button');
+    pdfBtn.className = 'cd-pdf-quick-btn';
+    pdfBtn.textContent = 'PDF';
+    pdfBtn.title = `Save/Print as PDF (Ctrl+P): ${attachment.fileName}`;
+    pdfBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openAndPrintSingleFileAsPdf(attachment);
+    });
+
     controls.appendChild(checkbox);
     controls.appendChild(dlBtn);
+    controls.appendChild(pdfBtn);
     wrapper.appendChild(controls);
+  }
+
+  function openAndPrintSingleFileAsPdf(attachment) {
+    const sessionUser = getClassroomSessionUser();
+    const isDoc = attachment.type === 'doc' || attachment.type === 'slide' || attachment.type === 'sheet';
+    const isPdf = (attachment.fileName || '').toLowerCase().endsWith('.pdf');
+
+    if (isDoc || isPdf) {
+      showToast(`Exporting ${attachment.fileName} as PDF...`);
+      chrome.runtime.sendMessage({
+        action: 'downloadFileAsPdf',
+        file: {
+          id: attachment.id,
+          type: attachment.type,
+          fileId: attachment.fileId,
+          url: attachment.url,
+          fileName: attachment.fileName,
+          authuser: attachment.authuser || sessionUser.effectiveAuth,
+          userEmail: sessionUser.email,
+        }
+      });
+    } else {
+      showToast(`Opening ${attachment.fileName} in tab to Save as PDF (Ctrl+P)...`);
+      chrome.runtime.sendMessage({
+        action: 'openAndPrintFileAsPdf',
+        file: {
+          id: attachment.id,
+          type: attachment.type,
+          fileId: attachment.fileId,
+          url: attachment.url,
+          fileName: attachment.fileName,
+          authuser: attachment.authuser || sessionUser.effectiveAuth,
+          userEmail: sessionUser.email,
+        }
+      });
+    }
   }
 
   // --------------- Floating Action Bar ---------------

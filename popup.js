@@ -45,6 +45,9 @@
     logsPanel: $('#logsPanel'),
     logsContainer: $('#logsContainer'),
     clearLogsBtn: $('#clearLogsBtn'),
+    driveViewerSection: $('#driveViewerSection'),
+    driveViewerTitle: $('#driveViewerTitle'),
+    drivePrintPdfBtn: $('#drivePrintPdfBtn'),
   };
 
   // --------------- State ---------------
@@ -71,6 +74,10 @@
       currentTabId = tab.id;
       const url = tab.url || '';
 
+      if (url.includes('drive.google.com/file/') || url.includes('docs.google.com/')) {
+        return showDriveViewer(tab);
+      }
+
       if (!url.startsWith('https://classroom.google.com')) {
         return showNotClassroom();
       }
@@ -94,13 +101,34 @@
   }
 
   function showNotClassroom() {
+    if (elements.driveViewerSection) elements.driveViewerSection.style.display = 'none';
     elements.notClassroom.style.display = 'flex';
     elements.classroomContent.style.display = 'none';
   }
 
   function showClassroom() {
+    if (elements.driveViewerSection) elements.driveViewerSection.style.display = 'none';
     elements.notClassroom.style.display = 'none';
     elements.classroomContent.style.display = 'block';
+  }
+
+  function showDriveViewer(tab) {
+    if (elements.notClassroom) elements.notClassroom.style.display = 'none';
+    if (elements.classroomContent) elements.classroomContent.style.display = 'none';
+    if (elements.driveViewerSection) {
+      elements.driveViewerSection.style.display = 'block';
+      const cleanTitle = (tab.title || 'Document').replace(/\s*-\s*Google (?:Drive|Docs|Slides|Sheets)$/i, '');
+      if (elements.driveViewerTitle) elements.driveViewerTitle.textContent = cleanTitle;
+
+      elements.drivePrintPdfBtn.onclick = () => {
+        elements.drivePrintPdfBtn.textContent = 'Opening Print Dialog (Ctrl+P)...';
+        chrome.runtime.sendMessage({
+          action: 'printActiveTab',
+          tabId: tab.id,
+        });
+        setTimeout(() => window.close(), 600);
+      };
+    }
   }
 
   function updateView(data) {
@@ -218,13 +246,18 @@
             <span class="cd-type-label">${typeMeta.label}</span>
           </div>
         </div>
-        <button class="cd-file-download-btn" data-file-id="${file.id}" title="Download: ${escapeHtml(file.fileName)}">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-        </button>
+        <div class="cd-file-actions-group">
+          <button class="cd-file-download-btn" data-file-id="${file.id}" title="Download: ${escapeHtml(file.fileName)}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+          <button class="cd-file-pdf-btn" data-file-id="${file.id}" title="Save/Print as PDF (Ctrl+P): ${escapeHtml(file.fileName)}">
+            PDF
+          </button>
+        </div>
       `;
 
       // Checkbox event
@@ -242,6 +275,13 @@
       dlBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         triggerSingleDownload(file, dlBtn);
+      });
+
+      // Individual Save as PDF (Ctrl+P) button event
+      const pdfBtn = row.querySelector('.cd-file-pdf-btn');
+      pdfBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerPdfAction(file, pdfBtn);
       });
 
       elements.filesList.appendChild(row);
@@ -336,6 +376,53 @@
     } catch (err) {
       btn.innerHTML = origHtml;
       btn.disabled = false;
+    }
+  }
+
+  async function triggerPdfAction(file, btn) {
+    const origText = btn.textContent;
+    btn.textContent = '⏳';
+    btn.disabled = true;
+
+    try {
+      const isNativeGoogleDoc = file.type === 'doc' || file.type === 'slide' || file.type === 'sheet';
+      const isAlreadyPdf = (file.fileName || '').toLowerCase().endsWith('.pdf');
+
+      if (isNativeGoogleDoc || isAlreadyPdf) {
+        // Direct export to PDF via Google's official PDF endpoint
+        const response = await chrome.runtime.sendMessage({
+          action: 'downloadFileAsPdf',
+          file,
+          tabId: currentTabId,
+        });
+        if (response?.success) {
+          btn.textContent = '✓';
+          btn.style.color = 'var(--cd-success)';
+          loadHistory();
+        } else {
+          btn.textContent = '✗';
+          btn.style.color = 'var(--cd-error)';
+        }
+      } else {
+        // For Drive files (e.g. PPTX, DOCX, view-only files):
+        // Open in tab, wait for file viewer to load, then trigger Print to PDF (Ctrl+P)!
+        await chrome.runtime.sendMessage({
+          action: 'openAndPrintFileAsPdf',
+          file,
+          tabId: currentTabId,
+        });
+        btn.textContent = '🖨️';
+        btn.style.color = 'var(--cd-primary)';
+      }
+    } catch (err) {
+      btn.textContent = '✗';
+      btn.style.color = 'var(--cd-error)';
+    } finally {
+      setTimeout(() => {
+        btn.textContent = origText;
+        btn.style.color = '';
+        btn.disabled = false;
+      }, 3000);
     }
   }
 

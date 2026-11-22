@@ -134,6 +134,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       return false;
 
+    case 'openAndPrintFileAsPdf':
+      openAndPrintFileAsPdf(message.file, message.tabId || sender.tab?.id)
+        .then(() => sendResponse({ success: true }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+
+    case 'downloadFileAsPdf':
+      const pdfFile = { ...message.file, forcePdf: true };
+      if (pdfFile.type === 'doc') pdfFile.type = 'doc';
+      else if (pdfFile.type === 'slide') pdfFile.type = 'slide';
+      else if (pdfFile.type === 'sheet') pdfFile.type = 'sheet';
+      downloadFile(pdfFile, message.tabId || sender.tab?.id)
+        .then(result => sendResponse({ success: true, result }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+
+    case 'printActiveTab':
+      if (message.tabId) {
+        chrome.scripting.executeScript({
+          target: { tabId: message.tabId },
+          func: () => {
+            window.print();
+          }
+        }).then(() => sendResponse({ success: true }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+      sendResponse({ success: false, error: 'No tabId provided' });
+      return false;
+
     case 'retryDownload':
       const historyItem = state.downloadHistory.find(h => h.id === message.fileId);
       if (historyItem) {
@@ -720,6 +750,78 @@ function attemptDirectDownload(file, fileName, downloadUrl, downloadIdKey, tabId
   });
 }
 
+// --------------- Open & Print File as PDF (Ctrl+P) ---------------
+async function openAndPrintFileAsPdf(file, tabId) {
+  const authuser = file.authuser || '0';
+  let viewerUrl = file.url;
+  if (file.fileId) {
+    if (file.type === 'drive') {
+      viewerUrl = `https://drive.google.com/file/d/${file.fileId}/view?authuser=${encodeURIComponent(authuser)}`;
+    } else if (file.type === 'doc') {
+      viewerUrl = `https://docs.google.com/document/d/${file.fileId}/edit?authuser=${encodeURIComponent(authuser)}`;
+    } else if (file.type === 'slide') {
+      viewerUrl = `https://docs.google.com/presentation/d/${file.fileId}/edit?authuser=${encodeURIComponent(authuser)}`;
+    } else if (file.type === 'sheet') {
+      viewerUrl = `https://docs.google.com/spreadsheets/d/${file.fileId}/edit?authuser=${encodeURIComponent(authuser)}`;
+    }
+  }
+
+  logMsg(tabId, 'info', `🚀 Opening file in new tab to Save as PDF (Ctrl+P): "${file.fileName}"`, { viewerUrl });
+
+  const newTab = await chrome.tabs.create({ url: viewerUrl, active: true });
+
+  const listener = (updatedTabId, changeInfo) => {
+    if (updatedTabId === newTab.id && changeInfo.status === 'complete') {
+      chrome.tabs.onUpdated.removeListener(listener);
+
+      // Give Google Drive viewer a moment to initialize the document canvas
+      setTimeout(() => {
+        chrome.scripting.executeScript({
+          target: { tabId: newTab.id },
+          func: (fileName) => {
+            const notice = document.createElement('div');
+            notice.style.cssText = `
+              position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+              background: #1a73e8; color: #fff; padding: 12px 24px;
+              border-radius: 8px; font-family: Roboto, Arial, sans-serif;
+              font-size: 14px; font-weight: 500; z-index: 2147483647;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.35); text-align: center;
+              transition: opacity 0.3s;
+            `;
+            notice.innerHTML = `<strong>Classroom Downloader</strong><br>Waiting for document to load...`;
+            document.body.appendChild(notice);
+
+            let checks = 0;
+            const pollReady = () => {
+              checks++;
+              const hasViewer = !!document.querySelector('canvas, iframe, [role="document"], .ndfHFb-c4YZDc, [role="main"]');
+              const isLoaded = document.readyState === 'complete' && (hasViewer || checks >= 6);
+
+              if (isLoaded || checks >= 8) {
+                notice.style.background = '#34a853';
+                notice.innerHTML = `<strong>Classroom Downloader</strong><br>File loaded! Opening Print to PDF (Ctrl+P)...`;
+                setTimeout(() => {
+                  notice.remove();
+                  window.print();
+                }, 600);
+              } else {
+                setTimeout(pollReady, 600);
+              }
+            };
+
+            setTimeout(pollReady, 800);
+          },
+          args: [file.fileName || 'file']
+        }).catch(err => {
+          console.warn('Script injection failed:', err);
+        });
+      }, 1200);
+    }
+  };
+
+  chrome.tabs.onUpdated.addListener(listener);
+}
+
 // --------------- URL Builders ---------------
 function getDownloadUrl(file) {
   if (!file) return '';
@@ -742,19 +844,22 @@ function getDownloadUrl(file) {
       return `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`;
 
     case 'doc':
+      const docFormat = file.forcePdf ? 'pdf' : (settings.docExportFormat || 'pdf');
       return isEmail
-        ? `https://docs.google.com/document/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}&authuser=${authParam}`
-        : `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}`;
+        ? `https://docs.google.com/document/d/${file.fileId}/export?format=${docFormat}&authuser=${authParam}`
+        : `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=${docFormat}`;
 
     case 'sheet':
+      const sheetFormat = file.forcePdf ? 'pdf' : (settings.sheetExportFormat || 'xlsx');
       return isEmail
-        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}&authuser=${authParam}`
-        : `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}`;
+        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${sheetFormat}&authuser=${authParam}`
+        : `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=${sheetFormat}`;
 
     case 'slide':
+      const slideFormat = file.forcePdf ? 'pdf' : (settings.slideExportFormat || 'pptx');
       return isEmail
-        ? `https://docs.google.com/presentation/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}?authuser=${authParam}`
-        : `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}`;
+        ? `https://docs.google.com/presentation/d/${file.fileId}/export/${slideFormat}?authuser=${authParam}`
+        : `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/${slideFormat}`;
 
     case 'drawing':
       return isEmail
@@ -772,7 +877,13 @@ function buildFileName(file, serverFilename = null, mimeExt = null) {
   const rawName = file.fileName || 'untitled';
   let name = sanitizeFileName(rawName);
 
-  console.log(`[CD] 🏗️ buildFileName: raw="${rawName}" → sanitized="${name}" (type=${file.type}, serverFilename=${serverFilename}, mimeExt=${mimeExt})`);
+  console.log(`[CD] 🏗️ buildFileName: raw="${rawName}" → sanitized="${name}" (type=${file.type}, forcePdf=${file.forcePdf})`);
+
+  // If forcePdf is true, replace or append .pdf
+  if (file.forcePdf) {
+    name = name.replace(/\.[a-zA-Z0-9]{1,10}$/i, '') + '.pdf';
+    return name;
+  }
 
   // Check if current name already has a recognized extension
   const existingExtMatch = name.match(/\.([a-zA-Z0-9]{1,10})$/i);

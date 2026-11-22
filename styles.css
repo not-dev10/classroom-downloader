@@ -141,6 +141,28 @@
   transform: scale(0.9);
 }
 
+.cd-pdf-quick-btn {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid rgba(234, 67, 53, 0.4);
+  background: rgba(234, 67, 53, 0.1);
+  color: #ea4335;
+  border-radius: var(--cd-radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--cd-transition);
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+}
+
+.cd-pdf-quick-btn:hover {
+  background: #ea4335;
+  color: white;
+}
+
 /* --------------- Floating Action Bar --------------- */
 .cd-floating-bar {
   position: fixed;
