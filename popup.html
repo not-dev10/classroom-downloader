@@ -70,6 +70,7 @@
         </button>
         <button class="cd-tab" data-tab="history" id="tabHistory">History</button>
         <button class="cd-tab" data-tab="settings" id="tabSettings">Settings</button>
+        <button class="cd-tab" data-tab="logs" id="tabLogs">Logs</button>
       </div>
 
       <!-- Tab 1: Files Panel (Active by Default) -->
@@ -224,6 +225,17 @@
           <button class="cd-btn cd-btn-primary cd-btn-full cd-btn-sm" id="saveSettingsBtn">
             Save Settings
           </button>
+        </div>
+      </section>
+
+      <!-- Tab 4: Debug Logs Panel -->
+      <section class="cd-panel" id="logsPanel" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:12px;font-weight:600;color:var(--text-primary)">Activity & Error Logs</span>
+          <button class="cd-btn cd-btn-outline cd-btn-sm" id="clearLogsBtn">Clear Logs</button>
+        </div>
+        <div class="cd-logs-container" id="logsContainer" style="background:#18181b;color:#a1a1aa;font-family:monospace;font-size:11px;padding:8px;border-radius:6px;max-height:280px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5;">
+          <div style="color:#71717a">No logs recorded yet. Click a file to download to see activity here.</div>
         </div>
       </section>
     </main>

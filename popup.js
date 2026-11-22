@@ -40,6 +40,9 @@
     filesPanel: $('#filesPanel'),
     historyPanel: $('#historyPanel'),
     settingsPanel: $('#settingsPanel'),
+    logsPanel: $('#logsPanel'),
+    logsContainer: $('#logsContainer'),
+    clearLogsBtn: $('#clearLogsBtn'),
   };
 
   // --------------- State ---------------
@@ -434,11 +437,24 @@
         elements.filesPanel.style.display = panelName === 'files' ? 'flex' : 'none';
         elements.historyPanel.style.display = panelName === 'history' ? 'flex' : 'none';
         elements.settingsPanel.style.display = panelName === 'settings' ? 'flex' : 'none';
+        if (elements.logsPanel) {
+          elements.logsPanel.style.display = panelName === 'logs' ? 'flex' : 'none';
+        }
 
         if (panelName === 'history') {
           loadHistory();
+        } else if (panelName === 'logs') {
+          loadLogs();
         }
       });
+    });
+
+    // Clear Logs
+    elements.clearLogsBtn?.addEventListener('click', async () => {
+      await chrome.runtime.sendMessage({ action: 'clearDebugLogs' });
+      if (elements.logsContainer) {
+        elements.logsContainer.innerHTML = '<div style="color:#71717a">Logs cleared.</div>';
+      }
     });
 
     // Clear History
@@ -505,6 +521,28 @@
         elements.historyList.appendChild(div);
       }
     } catch {}
+  }
+
+  // --------------- Logs Viewer ---------------
+  async function loadLogs() {
+    if (!elements.logsContainer) return;
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'getDebugLogs' });
+      const logs = response?.logs || [];
+      if (logs.length === 0) {
+        elements.logsContainer.innerHTML = '<div style="color:#71717a">No activity logs recorded yet.</div>';
+        return;
+      }
+      elements.logsContainer.innerHTML = logs.map(l => {
+        let color = '#d4d4d4';
+        if (l.level === 'error') color = '#ef4444';
+        else if (l.level === 'warn') color = '#f59e0b';
+        else if (l.level === 'info') color = '#60a5fa';
+        return `<div style="margin-bottom:4px;color:${color}">[${l.time}] ${escapeHtml(l.text)}${l.details ? ' ' + escapeHtml(l.details) : ''}</div>`;
+      }).reverse().join('');
+    } catch (e) {
+      elements.logsContainer.innerHTML = `<div style="color:#ef4444">Failed to load logs: ${e.message}</div>`;
+    }
   }
 
   // --------------- Settings ---------------

@@ -810,9 +810,16 @@
     let urlsToTry = [];
 
     if (file.type === 'drive' && file.fileId) {
-      // Try drive.google.com export endpoint first (handles auth redirection best)
+      // 1. Google Drive canonical multi-account export path (handles session auth best)
+      if (!isEmail && authuser) {
+        urlsToTry.push(`https://drive.google.com/u/${authParam}/uc?export=download&id=${file.fileId}`);
+      }
+      // 2. Query parameter authuser
       urlsToTry.push(`https://drive.google.com/uc?export=download&id=${file.fileId}&authuser=${authParam}`);
+      // 3. Usercontent export
       urlsToTry.push(`https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`);
+      // 4. Default uc endpoint without authuser (inherits default active session)
+      urlsToTry.push(`https://drive.google.com/uc?export=download&id=${file.fileId}`);
     } else if (file.type === 'doc' && file.fileId) {
       urlsToTry.push(isEmail
         ? `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
@@ -1021,6 +1028,15 @@
   function setupMessageListener() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       switch (message.action) {
+        case 'remoteLog':
+          const logMethod = console[message.level] || console.log;
+          if (message.details) {
+            logMethod(`[CD Background] ${message.text}`, message.details);
+          } else {
+            logMethod(`[CD Background] ${message.text}`);
+          }
+          return false;
+
         case 'downloadProgress':
           updateProgress(message.progress);
           sendResponse({ received: true });
