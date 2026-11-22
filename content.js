@@ -805,33 +805,87 @@
   // --------------- In-Tab Fetch Handler ---------------
   async function fetchFileInTab(file) {
     const authuser = file.authuser || getAuthUser();
-    let url = file.url;
+    const isEmail = typeof authuser === 'string' && authuser.includes('@');
+    const authParam = encodeURIComponent(authuser);
+    let urlsToTry = [];
 
     if (file.type === 'drive' && file.fileId) {
-      url = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authuser}&confirm=t`;
+      // Try drive.google.com export endpoint first (handles auth redirection best)
+      urlsToTry.push(`https://drive.google.com/uc?export=download&id=${file.fileId}&authuser=${authParam}`);
+      urlsToTry.push(`https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`);
     } else if (file.type === 'doc' && file.fileId) {
-      url = `https://docs.google.com/document/u/${authuser}/d/${file.fileId}/export?format=pdf`;
+      urlsToTry.push(isEmail
+        ? `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
+        : `https://docs.google.com/document/u/${authuser}/d/${file.fileId}/export?format=pdf`);
     } else if (file.type === 'sheet' && file.fileId) {
-      url = `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=xlsx`;
+      urlsToTry.push(isEmail
+        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=xlsx&authuser=${authParam}`
+        : `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=xlsx`);
     } else if (file.type === 'slide' && file.fileId) {
-      url = `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/pptx`;
+      urlsToTry.push(isEmail
+        ? `https://docs.google.com/presentation/d/${file.fileId}/export/pptx&authuser=${authParam}`
+        : `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/pptx`);
+    } else if (file.url) {
+      urlsToTry.push(file.url);
     }
 
-    const response = await fetch(url, { credentials: 'include' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    console.log(`[CD Content] 🔄 fetchFileInTab starting for "${file.fileName}", candidate URLs:`, urlsToTry);
 
-    const contentType = (response.headers.get('content-type') || '').toLowerCase();
-    if (contentType.includes('text/html')) {
-      throw new Error('Access forbidden (403): Google returned an HTML page instead of file content.');
+    let lastError = null;
+    for (const url of urlsToTry) {
+      try {
+        console.log(`[CD Content] 🌐 Trying in-tab fetch: ${url}`);
+        let response = await fetch(url, { credentials: 'include' });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        let contentType = (response.headers.get('content-type') || '').toLowerCase();
+        let blob = await response.blob();
+
+        // Check if response is an HTML login or confirmation page
+        if (contentType.includes('text/html') || blob.type.includes('text/html')) {
+          const sample = await blob.slice(0, 500).text();
+          if (sample.includes('confirm=') || sample.includes('download-form')) {
+            // Confirmation form found, parse token
+            const tokenMatch = sample.match(/confirm=([a-zA-Z0-9_-]+)/);
+            if (tokenMatch && file.fileId) {
+              const confirmUrl = `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&confirm=${tokenMatch[1]}&authuser=${authParam}`;
+              console.log(`[CD Content] 🔄 In-tab confirm token found, re-fetching: ${confirmUrl}`);
+              response = await fetch(confirmUrl, { credentials: 'include' });
+              if (response.ok) {
+                blob = await response.blob();
+              }
+            }
+          } else {
+            throw new Error(`Google returned HTML (login/permission required) for authuser=${authuser}`);
+          }
+        }
+
+        // Verify final blob is not HTML
+        if (blob.size < 4000) {
+          const checkText = await blob.slice(0, 100).text();
+          if (checkText.toLowerCase().includes('<!doctype') || checkText.toLowerCase().includes('<html')) {
+            throw new Error('Access forbidden: Returned HTML document instead of file data');
+          }
+        }
+
+        console.log(`[CD Content] ✅ In-tab fetch succeeded: ${blob.size} bytes, MIME: ${blob.type}`);
+
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch (err) {
+        lastError = err;
+        console.warn(`[CD Content] ⚠️ URL attempt failed (${url}):`, err.message);
+      }
     }
 
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+    throw lastError || new Error('All in-tab fetch attempts failed');
   }
 
   // --------------- Toast Notifications ---------------

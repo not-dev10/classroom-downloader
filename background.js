@@ -459,6 +459,72 @@ async function downloadFile(file, tabId) {
   console.log(`📂 Tab ID: ${tabId || 'none'}`);
   console.groupEnd();
 
+  // --- Strategy 1: Try chrome.downloads.download() (uses browser cookies) ---
+  try {
+    const result = await attemptDirectDownload(file, fileName, downloadUrl, downloadIdKey);
+    return result;
+  } catch (directError) {
+    console.warn(`[CD] ⚠️ Direct download failed for "${file.fileName}": ${directError.message}`);
+    console.log(`[CD] 🔄 Attempting fallback: fetch via tab's authenticated context...`);
+  }
+
+  // --- Strategy 2: Fetch through the tab's context (inherits classroom.google.com cookies) ---
+  if (tabId) {
+    try {
+      const result = await attemptTabFetchDownload(file, fileName, downloadIdKey, tabId);
+      return result;
+    } catch (tabError) {
+      console.warn(`[CD] ⚠️ Tab fetch also failed: ${tabError.message}`);
+    }
+  }
+
+  // --- Strategy 3: Fetch directly in service worker with credentials ---
+  try {
+    console.log(`[CD] 🔄 Attempting fallback: service worker fetch with credentials...`);
+    const blob = await fetchFileBlob(file);
+    const dataUrl = await blobToDataUrl(blob);
+
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download({
+        url: dataUrl,
+        filename: fileName,
+        conflictAction: 'uniquify',
+        saveAs: false,
+      }, (downloadId) => {
+        if (chrome.runtime.lastError) {
+          const errorMsg = chrome.runtime.lastError.message;
+          console.error(`[CD] ❌ Blob download failed:`, errorMsg);
+          addToHistory({
+            id: downloadIdKey, fileName: file.fileName, url: file.url,
+            type: file.type, fileId: file.fileId, authuser: file.authuser,
+            status: 'failed', error: errorMsg, timestamp: Date.now(),
+          });
+          reject(new Error(errorMsg));
+        } else {
+          console.log(`[CD] ✅ Blob download started — Chrome download ID: ${downloadId}`);
+          addToHistory({
+            id: downloadIdKey, fileName: file.fileName, url: file.url,
+            type: file.type, fileId: file.fileId, authuser: file.authuser,
+            status: 'completed', downloadId, timestamp: Date.now(),
+          });
+          resolve({ downloadId });
+        }
+      });
+    });
+  } catch (swError) {
+    const finalError = `All download methods failed. Direct: forbidden. Tab fetch: ${tabId ? 'failed' : 'no tab'}. SW fetch: ${swError.message}`;
+    console.error(`[CD] ❌ ${finalError}`);
+    addToHistory({
+      id: downloadIdKey, fileName: file.fileName, url: file.url,
+      type: file.type, fileId: file.fileId, authuser: file.authuser,
+      status: 'failed', error: finalError, timestamp: Date.now(),
+    });
+    throw new Error(finalError);
+  }
+}
+
+// Strategy 1: Direct chrome.downloads.download
+function attemptDirectDownload(file, fileName, downloadUrl, downloadIdKey) {
   return new Promise((resolve, reject) => {
     const downloadOpts = {
       url: downloadUrl,
@@ -466,119 +532,104 @@ async function downloadFile(file, tabId) {
       conflictAction: 'uniquify',
       saveAs: false,
     };
-    console.log(`[CD] 📥 chrome.downloads.download() called with:`, JSON.stringify(downloadOpts, null, 2));
+    console.log(`[CD] 📥 Strategy 1: chrome.downloads.download()`, JSON.stringify(downloadOpts, null, 2));
 
     chrome.downloads.download(downloadOpts, (downloadId) => {
-        if (chrome.runtime.lastError) {
-          const errorMsg = chrome.runtime.lastError.message;
-          console.error(`[CD] ❌ chrome.downloads.download FAILED:`, errorMsg);
-          console.error(`[CD] ❌ Failed filename was: "${fileName}" | URL: ${downloadUrl}`);
-          addToHistory({
-            id: downloadIdKey,
-            fileName: file.fileName,
-            url: file.url,
-            type: file.type,
-            fileId: file.fileId,
-            authuser: file.authuser,
-            status: 'failed',
-            error: errorMsg,
-            timestamp: Date.now(),
-          });
-          reject(new Error(errorMsg));
-          return;
-        }
-
-        console.log(`[CD] ✅ Download started — Chrome download ID: ${downloadId}`);
-
-        // Watch for completion or HTML error page detection
-        const onChangedListener = (delta) => {
-          if (delta.id !== downloadId) return;
-
-          console.log(`[CD] 🔄 Download ${downloadId} state change:`, JSON.stringify(delta));
-
-          if (delta.error) {
-            chrome.downloads.onChanged.removeListener(onChangedListener);
-            const err = delta.error.current;
-            console.error(`[CD] ❌ Download ${downloadId} error event:`, err);
-            addToHistory({
-              id: downloadIdKey,
-              fileName: file.fileName,
-              url: file.url,
-              type: file.type,
-              fileId: file.fileId,
-              authuser: file.authuser,
-              status: 'failed',
-              error: `Download failed: ${err}`,
-              timestamp: Date.now(),
-            });
-            reject(new Error(`Download failed: ${err}`));
-          } else if (delta.state && delta.state.current === 'complete') {
-            chrome.downloads.onChanged.removeListener(onChangedListener);
-            console.log(`[CD] ✅ Download ${downloadId} completed, verifying MIME type...`);
-
-            // Verify MIME type to ensure it isn't an HTML error/login page
-            chrome.downloads.search({ id: downloadId }, (items) => {
-              const item = items && items[0];
-              const mime = (item?.mime || '').toLowerCase();
-              const fileSize = item?.fileSize || item?.totalBytes || 'unknown';
-              const finalUrl = item?.finalUrl || 'unknown';
-              const savedPath = item?.filename || 'unknown';
-              const isHtml = mime.includes('text/html');
-
-              console.log(`[CD] 📊 Download ${downloadId} result:`, {
-                mime,
-                fileSize,
-                finalUrl,
-                savedPath,
-                isHtml,
-              });
-
-              if (isHtml && !fileName.endsWith('.html') && !fileName.endsWith('.htm')) {
-                console.warn(`[CD] ⚠️ Download ${downloadId}: File is HTML (auth/permission failure) — erasing invalid file`);
-                console.warn(`[CD] ⚠️ Expected a binary file but got text/html. Auth may be wrong. authuser=${file.authuser}`);
-                chrome.downloads.erase({ id: downloadId });
-                const errorMsg = `Access Forbidden (403): Google returned an HTML page instead of the file. authuser=${file.authuser}. Verify you're logged into the correct account (/u/${file.authuser || '0'}/).`;
-                addToHistory({
-                  id: downloadIdKey,
-                  fileName: file.fileName,
-                  url: file.url,
-                  type: file.type,
-                  fileId: file.fileId,
-                  authuser: file.authuser,
-                  status: 'failed',
-                  error: errorMsg,
-                  timestamp: Date.now(),
-                });
-                reject(new Error(errorMsg));
-              } else {
-                console.log(`[CD] ✅ Download ${downloadId} verified OK — MIME: ${mime}, Size: ${fileSize}`);
-                addToHistory({
-                  id: downloadIdKey,
-                  fileName: file.fileName,
-                  url: file.url,
-                  type: file.type,
-                  fileId: file.fileId,
-                  authuser: file.authuser,
-                  status: 'completed',
-                  downloadId: downloadId,
-                  timestamp: Date.now(),
-                });
-                resolve({ downloadId });
-              }
-            });
-          }
-        };
-
-        chrome.downloads.onChanged.addListener(onChangedListener);
-
-        // Fallback timeout to unregister listener after 30s
-        setTimeout(() => {
-          chrome.downloads.onChanged.removeListener(onChangedListener);
-          console.warn(`[CD] ⏱️ Download ${downloadId} timed out after 30s — resolving anyway`);
-          resolve({ downloadId });
-        }, 30000);
+      if (chrome.runtime.lastError) {
+        const errorMsg = chrome.runtime.lastError.message;
+        console.error(`[CD] ❌ chrome.downloads.download FAILED:`, errorMsg);
+        reject(new Error(errorMsg));
+        return;
       }
-    );
+
+      console.log(`[CD] ✅ Download started — Chrome download ID: ${downloadId}`);
+
+      const onChangedListener = (delta) => {
+        if (delta.id !== downloadId) return;
+
+        console.log(`[CD] 🔄 Download ${downloadId} state change:`, JSON.stringify(delta));
+
+        if (delta.error) {
+          chrome.downloads.onChanged.removeListener(onChangedListener);
+          const err = delta.error.current;
+          console.error(`[CD] ❌ Download ${downloadId} error:`, err);
+          reject(new Error(`Download failed: ${err}`));
+        } else if (delta.state && delta.state.current === 'complete') {
+          chrome.downloads.onChanged.removeListener(onChangedListener);
+
+          chrome.downloads.search({ id: downloadId }, (items) => {
+            const item = items && items[0];
+            const mime = (item?.mime || '').toLowerCase();
+            const fileSize = item?.fileSize || item?.totalBytes || 'unknown';
+            const isHtml = mime.includes('text/html');
+
+            console.log(`[CD] 📊 Download ${downloadId} result:`, { mime, fileSize, isHtml });
+
+            if (isHtml && !fileName.endsWith('.html') && !fileName.endsWith('.htm')) {
+              console.warn(`[CD] ⚠️ Download ${downloadId}: Got HTML instead of file — erasing and falling back`);
+              chrome.downloads.removeFile(downloadId, () => {
+                chrome.downloads.erase({ id: downloadId });
+              });
+              reject(new Error(`Got HTML instead of binary file (auth failure). authuser=${file.authuser}`));
+            } else {
+              console.log(`[CD] ✅ Download ${downloadId} verified OK — MIME: ${mime}, Size: ${fileSize}`);
+              addToHistory({
+                id: downloadIdKey, fileName: file.fileName, url: file.url,
+                type: file.type, fileId: file.fileId, authuser: file.authuser,
+                status: 'completed', downloadId, timestamp: Date.now(),
+              });
+              resolve({ downloadId });
+            }
+          });
+        }
+      };
+
+      chrome.downloads.onChanged.addListener(onChangedListener);
+
+      setTimeout(() => {
+        chrome.downloads.onChanged.removeListener(onChangedListener);
+        resolve({ downloadId });
+      }, 30000);
+    });
+  });
+}
+
+// Strategy 2: Fetch via tab content script (has classroom.google.com cookies)
+async function attemptTabFetchDownload(file, fileName, downloadIdKey, tabId) {
+  console.log(`[CD] 📥 Strategy 2: Fetching via tab ${tabId} (content script)...`);
+
+  const tabResponse = await chrome.tabs.sendMessage(tabId, {
+    action: 'fetchFileInTab',
+    file,
+  });
+
+  if (!tabResponse?.success || !tabResponse.dataUrl) {
+    throw new Error(tabResponse?.error || 'Tab fetch returned no data');
+  }
+
+  console.log(`[CD] ✅ Tab fetch succeeded, dataUrl length: ${tabResponse.dataUrl.length}`);
+
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download({
+      url: tabResponse.dataUrl,
+      filename: fileName,
+      conflictAction: 'uniquify',
+      saveAs: false,
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        const errorMsg = chrome.runtime.lastError.message;
+        console.error(`[CD] ❌ Tab-fetch blob download failed:`, errorMsg);
+        reject(new Error(errorMsg));
+      } else {
+        console.log(`[CD] ✅ Tab-fetch download started — Chrome download ID: ${downloadId}`);
+        addToHistory({
+          id: downloadIdKey, fileName: file.fileName, url: file.url,
+          type: file.type, fileId: file.fileId, authuser: file.authuser,
+          status: 'completed', downloadId, timestamp: Date.now(),
+        });
+        resolve({ downloadId });
+      }
+    });
   });
 }
 
