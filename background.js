@@ -594,11 +594,32 @@ function buildFileName(file) {
     name += '.' + (settings.sheetExportFormat || 'xlsx');
   } else if (file.type === 'slide' && !name.match(/\.(pptx|pdf|odp)$/i)) {
     name += '.' + (settings.slideExportFormat || 'pptx');
+  } else if (file.type === 'drawing' && !name.match(/\.(png|svg|pdf|jpg|jpeg)$/i)) {
+    name += '.png';
+  }
+
+  // For drive files without any extension, don't add one (Chrome will get it from Content-Disposition)
+  // But ensure the name is valid
+  if (!name || name === 'untitled') {
+    name = 'untitled';
+  }
+
+  // Final safety: strip any trailing dots/spaces from the full name (before extension)
+  // This handles edge cases like "Pharmacy Management System SE." -> "Pharmacy Management System SE"
+  const extMatch = name.match(/^(.+?)(\.[a-zA-Z0-9]{1,10})$/);
+  if (extMatch) {
+    // Has extension — sanitize the stem only
+    let stem = extMatch[1].replace(/[.\s]+$/, '');
+    name = (stem || 'untitled') + extMatch[2];
+  } else {
+    // No extension — strip trailing dots
+    name = name.replace(/[.\s]+$/, '') || 'untitled';
   }
 
   // Build folder path if requested
   if (settings.preserveFolders && file.folderPath) {
-    return sanitizePath(file.folderPath) + '/' + name;
+    const folderPath = sanitizePath(file.folderPath);
+    return folderPath ? folderPath + '/' + name : name;
   }
 
   return name;
@@ -831,11 +852,17 @@ function extractFileNameFromUrl(url) {
 }
 
 function sanitizeFileName(name) {
-  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'untitled';
+  let clean = name
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')  // Remove illegal chars
+    .replace(/\s+/g, ' ')                      // Collapse whitespace
+    .trim()
+    .replace(/[.\s]+$/, '');                    // Strip trailing dots & spaces (Windows rejects these)
+  // If name is empty after sanitization, use fallback
+  return clean || 'untitled';
 }
 
 function sanitizePath(path) {
-  return path.split('/').map(p => sanitizeFileName(p)).join('/');
+  return path.split('/').map(p => sanitizeFileName(p)).filter(p => p && p !== 'untitled').join('/');
 }
 
 function generateId() {

@@ -317,7 +317,8 @@
       .replace(/\s+/g, ' ')
       .replace(/\b(?:Google Drive|Google Docs|Google Sheets|Google Slides|PDF|Word|PowerPoint|Excel)\b/gi, '')
       .replace(/:\s*$/, '')
-      .trim();
+      .trim()
+      .replace(/[.\s]+$/, '');  // Strip trailing dots/spaces (Windows rejects these)
 
     if (!name || name.length < 2) {
       const typeNames = {
@@ -774,7 +775,12 @@
   }
 
   function sanitizeFileName(name) {
-    return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim() || 'untitled';
+    let clean = name
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')  // Remove illegal chars
+      .replace(/\s+/g, ' ')                      // Collapse whitespace
+      .trim()
+      .replace(/[.\s]+$/, '');                    // Strip trailing dots & spaces (Windows rejects these)
+    return clean || 'untitled';
   }
 
   function generateId() {
