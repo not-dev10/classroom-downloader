@@ -47,7 +47,10 @@
     clearLogsBtn: $('#clearLogsBtn'),
     driveViewerSection: $('#driveViewerSection'),
     driveViewerTitle: $('#driveViewerTitle'),
+    driveDownloadPdfBtn: $('#driveDownloadPdfBtn'),
+    driveDownloadOriginalBtn: $('#driveDownloadOriginalBtn'),
     drivePrintPdfBtn: $('#drivePrintPdfBtn'),
+    driveViewerStatus: $('#driveViewerStatus'),
   };
 
   // --------------- State ---------------
@@ -112,22 +115,129 @@
     elements.classroomContent.style.display = 'block';
   }
 
+  function extractFileInfoFromUrl(url, title = '') {
+    let fileId = null;
+    let type = 'drive';
+    let m;
+
+    if ((m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/))) {
+      fileId = m[1];
+      type = 'drive';
+    } else if ((m = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/))) {
+      fileId = m[1];
+      type = 'doc';
+    } else if ((m = url.match(/\/presentation\/d\/([a-zA-Z0-9_-]+)/))) {
+      fileId = m[1];
+      type = 'slide';
+    } else if ((m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/))) {
+      fileId = m[1];
+      type = 'sheet';
+    } else if ((m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/))) {
+      fileId = m[1];
+      type = 'drive';
+    }
+
+    let authuser = '0';
+    const uMatch = url.match(/\/u\/(\d+)\//);
+    if (uMatch) {
+      authuser = uMatch[1];
+    } else {
+      const qMatch = url.match(/[?&]authuser=([^&#]+)/);
+      if (qMatch) authuser = decodeURIComponent(qMatch[1]);
+    }
+
+    const cleanTitle = (title || 'Document')
+      .replace(/\s*-\s*Google (?:Drive|Docs|Slides|Sheets)$/i, '')
+      .trim();
+
+    return { fileId, type, authuser, fileName: cleanTitle, url };
+  }
+
   function showDriveViewer(tab) {
     if (elements.notClassroom) elements.notClassroom.style.display = 'none';
     if (elements.classroomContent) elements.classroomContent.style.display = 'none';
     if (elements.driveViewerSection) {
       elements.driveViewerSection.style.display = 'block';
-      const cleanTitle = (tab.title || 'Document').replace(/\s*-\s*Google (?:Drive|Docs|Slides|Sheets)$/i, '');
+      const cleanTitle = (tab.title || 'Document').replace(/\s*-\s*Google (?:Drive|Docs|Slides|Sheets)$/i, '').trim();
       if (elements.driveViewerTitle) elements.driveViewerTitle.textContent = cleanTitle;
 
-      elements.drivePrintPdfBtn.onclick = () => {
-        elements.drivePrintPdfBtn.textContent = 'Opening Print Dialog (Ctrl+P)...';
-        chrome.runtime.sendMessage({
-          action: 'printActiveTab',
-          tabId: tab.id,
-        });
-        setTimeout(() => window.close(), 600);
-      };
+      const fileInfo = extractFileInfoFromUrl(tab.url || '', cleanTitle);
+
+      // 1. Direct Download as PDF button
+      if (elements.driveDownloadPdfBtn) {
+        elements.driveDownloadPdfBtn.onclick = async () => {
+          elements.driveDownloadPdfBtn.disabled = true;
+          elements.driveDownloadPdfBtn.textContent = '⏳ Exporting PDF...';
+          try {
+            const resp = await chrome.runtime.sendMessage({
+              action: 'downloadFileAsPdf',
+              file: { ...fileInfo, forcePdf: true },
+              tabId: tab.id,
+            });
+            if (resp?.success) {
+              elements.driveDownloadPdfBtn.textContent = '✓ PDF Downloaded!';
+              elements.driveDownloadPdfBtn.style.background = '#16a34a';
+              setTimeout(() => {
+                elements.driveDownloadPdfBtn.textContent = '⬇️ Direct Download as PDF (Clean)';
+                elements.driveDownloadPdfBtn.style.background = '#1a73e8';
+                elements.driveDownloadPdfBtn.disabled = false;
+              }, 2500);
+            } else {
+              throw new Error(resp?.error || 'Direct PDF conversion not available');
+            }
+          } catch (err) {
+            console.warn('Direct PDF export error:', err);
+            elements.driveDownloadPdfBtn.textContent = '⚠️ Direct export blocked. Try Page Waiter';
+            setTimeout(() => {
+              elements.driveDownloadPdfBtn.textContent = '⬇️ Direct Download as PDF (Clean)';
+              elements.driveDownloadPdfBtn.disabled = false;
+            }, 3000);
+          }
+        };
+      }
+
+      // 2. Download Original File button
+      if (elements.driveDownloadOriginalBtn) {
+        elements.driveDownloadOriginalBtn.onclick = async () => {
+          elements.driveDownloadOriginalBtn.disabled = true;
+          elements.driveDownloadOriginalBtn.textContent = '⏳ Downloading...';
+          try {
+            const resp = await chrome.runtime.sendMessage({
+              action: 'downloadFile',
+              file: fileInfo,
+              tabId: tab.id,
+            });
+            if (resp?.success) {
+              elements.driveDownloadOriginalBtn.textContent = '✓ File Downloaded!';
+              setTimeout(() => {
+                elements.driveDownloadOriginalBtn.textContent = '💾 Download Original File';
+                elements.driveDownloadOriginalBtn.disabled = false;
+              }, 2500);
+            } else {
+              throw new Error(resp?.error || 'Download failed');
+            }
+          } catch (err) {
+            elements.driveDownloadOriginalBtn.textContent = '❌ Download blocked';
+            setTimeout(() => {
+              elements.driveDownloadOriginalBtn.textContent = '💾 Download Original File';
+              elements.driveDownloadOriginalBtn.disabled = false;
+            }, 3000);
+          }
+        };
+      }
+
+      // 3. Page Load Waiter & Print to PDF button
+      if (elements.drivePrintPdfBtn) {
+        elements.drivePrintPdfBtn.onclick = () => {
+          elements.drivePrintPdfBtn.textContent = 'Injecting Page Ready Helper...';
+          chrome.runtime.sendMessage({
+            action: 'injectViewerHelper',
+            tabId: tab.id,
+            autoTrigger: false,
+          });
+          setTimeout(() => window.close(), 500);
+        };
+      }
     }
   }
 

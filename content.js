@@ -917,11 +917,12 @@
     let urlsToTry = [];
 
     if (file.forcePdf && file.fileId) {
-      // Prioritize direct PDF export endpoints for Google Docs, Slides, Sheets, and Drive Office files
+      // Prioritize direct PDF export endpoints for Google Docs, Slides, Sheets, Drawings, and Drive Office files
       const fn = (file.fileName || '').toLowerCase();
       const isPpt = file.type === 'slide' || file.detectedExt === 'pptx' || file.detectedExt === 'ppt' || fn.endsWith('.pptx') || fn.endsWith('.ppt');
       const isWord = file.type === 'doc' || file.detectedExt === 'docx' || file.detectedExt === 'doc' || fn.endsWith('.docx') || fn.endsWith('.doc');
       const isSheet = file.type === 'sheet' || file.detectedExt === 'xlsx' || file.detectedExt === 'xls' || file.detectedExt === 'csv' || fn.endsWith('.xlsx') || fn.endsWith('.csv');
+      const isDrawing = file.type === 'drawing';
 
       if (isPpt) {
         urlsToTry.push(isEmail
@@ -935,6 +936,10 @@
         urlsToTry.push(isEmail
           ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
           : `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=pdf`);
+      } else if (isDrawing) {
+        urlsToTry.push(isEmail
+          ? `https://docs.google.com/drawings/d/${file.fileId}/export/pdf?authuser=${authParam}`
+          : `https://docs.google.com/drawings/u/${authuser}/d/${file.fileId}/export/pdf`);
       }
     }
 
@@ -949,18 +954,27 @@
       urlsToTry.push(`https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`);
       // 4. Default uc endpoint without authuser (inherits default active session)
       urlsToTry.push(`https://drive.google.com/uc?export=download&id=${file.fileId}`);
+
+      // If forcePdf requested, also add Google Docs/Slides export fallbacks in case it is a hosted doc
+      if (file.forcePdf) {
+        urlsToTry.push(`https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`);
+        urlsToTry.push(`https://docs.google.com/presentation/d/${file.fileId}/export/pdf?authuser=${authParam}`);
+        urlsToTry.push(`https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=pdf&authuser=${authParam}`);
+      }
     } else if (file.type === 'doc' && file.fileId) {
       urlsToTry.push(isEmail
         ? `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
         : `https://docs.google.com/document/u/${authuser}/d/${file.fileId}/export?format=pdf`);
     } else if (file.type === 'sheet' && file.fileId) {
+      const sheetFmt = file.forcePdf ? 'pdf' : 'xlsx';
       urlsToTry.push(isEmail
-        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=xlsx&authuser=${authParam}`
-        : `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=xlsx`);
+        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${sheetFmt}&authuser=${authParam}`
+        : `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=${sheetFmt}`);
     } else if (file.type === 'slide' && file.fileId) {
+      const slideFmt = file.forcePdf ? 'pdf' : 'pptx';
       urlsToTry.push(isEmail
-        ? `https://docs.google.com/presentation/d/${file.fileId}/export/pptx&authuser=${authParam}`
-        : `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/pptx`);
+        ? `https://docs.google.com/presentation/d/${file.fileId}/export/${slideFmt}?authuser=${authParam}`
+        : `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/${slideFmt}`);
     } else if (file.url) {
       urlsToTry.push(file.url);
     }
@@ -1277,7 +1291,7 @@
 
         case 'fetchFileInTab':
           fetchFileInTab(message.file)
-            .then(dataUrl => sendResponse({ success: true, dataUrl }))
+            .then(result => sendResponse(result))
             .catch(err => sendResponse({ success: false, error: err.message }));
           return true;
 

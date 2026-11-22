@@ -164,6 +164,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: 'No tabId provided' });
       return false;
 
+    case 'injectViewerHelper':
+      if (message.tabId) {
+        chrome.scripting.executeScript({
+          target: { tabId: message.tabId },
+          func: documentViewerHelperScript,
+          args: [!!message.autoTrigger]
+        }).then(() => sendResponse({ success: true }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+      sendResponse({ success: false, error: 'No tabId provided' });
+      return false;
+
     case 'retryDownload':
       const historyItem = state.downloadHistory.find(h => h.id === message.fileId);
       if (historyItem) {
@@ -559,8 +572,12 @@ async function fetchFileBlobWithFallback(file, tabId) {
           action: 'fetchFileInTab',
           file,
         });
-        if (tabResponse?.success && tabResponse.dataUrl) {
-          const res = await fetch(tabResponse.dataUrl);
+        const rawUrl = typeof tabResponse?.dataUrl === 'string'
+          ? tabResponse.dataUrl
+          : (tabResponse?.dataUrl?.dataUrl || null);
+
+        if (tabResponse?.success && rawUrl) {
+          const res = await fetch(rawUrl);
           return await res.blob();
         }
       } catch (tabErr) {
@@ -646,18 +663,24 @@ async function attemptTabFetchDownload(file, initialFileName, downloadIdKey, tab
     file,
   });
 
-  if (!tabResponse?.success || !tabResponse.dataUrl) {
+  const rawDataUrl = typeof tabResponse?.dataUrl === 'string'
+    ? tabResponse.dataUrl
+    : (tabResponse?.dataUrl?.dataUrl || null);
+
+  if (!tabResponse?.success || !rawDataUrl) {
     throw new Error(tabResponse?.error || 'Tab fetch returned no binary data');
   }
 
   // Refine filename using serverFilename and mimeExt returned from tab
-  const fileName = buildFileName(file, tabResponse.serverFilename, tabResponse.mimeExt);
+  const serverFilename = tabResponse.serverFilename || tabResponse.dataUrl?.serverFilename || null;
+  const mimeExt = tabResponse.mimeExt || tabResponse.dataUrl?.mimeExt || null;
+  const fileName = buildFileName(file, serverFilename, mimeExt);
 
-  logMsg(tabId, 'info', `💾 Tab received file data (${Math.round(tabResponse.dataUrl.length * 0.75 / 1024)} KB). Saving to disk as "${fileName}"...`);
+  logMsg(tabId, 'info', `💾 Tab received file data (${Math.round(rawDataUrl.length * 0.75 / 1024)} KB). Saving to disk as "${fileName}"...`);
 
   return new Promise((resolve, reject) => {
     chrome.downloads.download({
-      url: tabResponse.dataUrl,
+      url: rawDataUrl,
       filename: fileName,
       conflictAction: 'uniquify',
       saveAs: false,
@@ -750,7 +773,204 @@ function attemptDirectDownload(file, fileName, downloadUrl, downloadIdKey, tabId
   });
 }
 
-// --------------- Open & Print File as PDF (Ctrl+P) ---------------
+// --------------- Injected Document Viewer Helper Script ---------------
+function documentViewerHelperScript(autoTrigger) {
+  let existing = document.getElementById('cd-viewer-helper-banner');
+  if (existing) {
+    existing.style.animation = 'none';
+    existing.offsetHeight;
+    existing.style.animation = 'cdPulse 0.5s ease';
+    return;
+  }
+
+  const style = document.createElement('style');
+  style.id = 'cd-viewer-helper-styles';
+  style.textContent = `
+    @keyframes cdPulse {
+      0% { transform: translate(-50%, -10px); opacity: 0; }
+      100% { transform: translate(-50%, 0); opacity: 1; }
+    }
+    @keyframes cdSpin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .cd-spin {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: cdSpin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @media print {
+      #cd-viewer-helper-banner, #cd-viewer-helper-styles {
+        display: none !important;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+
+  const banner = document.createElement('div');
+  banner.id = 'cd-viewer-helper-banner';
+  banner.style.cssText = `
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #18181b;
+    color: #f4f4f5;
+    padding: 12px 20px;
+    border-radius: 12px;
+    box-shadow: 0 10px 35px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.15);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    animation: cdPulse 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: auto;
+  `;
+
+  banner.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-size:20px;">📄</span>
+      <div>
+        <div style="font-weight:600;font-size:13px;color:#fff;">Classroom Downloader</div>
+        <div id="cd-viewer-status-text" style="font-size:11px;color:#a1a1aa;margin-top:2px;">
+          <span class="cd-spin"></span> Waiting for document pages to load...
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button id="cd-viewer-save-btn" style="
+        background: #2563eb; color: #fff; border: none; padding: 7px 14px;
+        border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+        display: flex; align-items: center; gap: 5px; transition: background 0.2s;
+      ">
+        🖨️ Save as PDF
+      </button>
+      <button id="cd-viewer-close-btn" style="
+        background: rgba(255,255,255,0.1); color: #a1a1aa; border: none; padding: 7px 10px;
+        border-radius: 6px; font-size: 12px; cursor: pointer;
+      " title="Dismiss">✕</button>
+    </div>
+  `;
+
+  document.body.appendChild(banner);
+
+  const statusText = banner.querySelector('#cd-viewer-status-text');
+  const saveBtn = banner.querySelector('#cd-viewer-save-btn');
+  const closeBtn = banner.querySelector('#cd-viewer-close-btn');
+
+  closeBtn.addEventListener('click', () => {
+    banner.remove();
+    style.remove();
+  });
+
+  let pollCount = 0;
+  let isReady = false;
+
+  function checkReadiness() {
+    pollCount++;
+
+    const spinners = Array.from(document.querySelectorAll('[role="progressbar"], .ndfHFb-c4YZDc-s2gQvd, .drive-viewer-loading'));
+    const visibleSpinner = spinners.some(s => s && (s.offsetWidth > 0 || s.offsetHeight > 0 || window.getComputedStyle(s).display !== 'none'));
+
+    const canvases = Array.from(document.querySelectorAll('canvas'));
+    const renderedCanvases = canvases.filter(c => c.width > 100 && c.height > 100);
+
+    const imgs = Array.from(document.querySelectorAll('div[role="document"] img, .drive-viewer-page img, img[src*="blob:"]'));
+    const loadedImgs = imgs.filter(i => i.complete && i.naturalWidth > 100);
+
+    const pages = document.querySelectorAll('div[aria-label*="Page" i], div[data-page-number], .drive-viewer-page, .ndfHFb-c4YZDc-DARUcf-haAclf');
+
+    const hasContent = renderedCanvases.length > 0 || loadedImgs.length > 0 || (pages.length > 0 && document.readyState === 'complete');
+
+    if (!visibleSpinner && hasContent) {
+      isReady = true;
+      const countMsg = renderedCanvases.length > 0
+        ? `${renderedCanvases.length} page(s) loaded`
+        : (loadedImgs.length > 0 ? `${loadedImgs.length} image(s) loaded` : 'Document loaded');
+
+      statusText.innerHTML = `<span style="color:#22c55e;">●</span> Document loaded (${countMsg})! Ready to save.`;
+      saveBtn.style.background = '#16a34a';
+
+      if (autoTrigger) {
+        startCountdown();
+      }
+      return;
+    }
+
+    if (pollCount > 60) {
+      statusText.innerHTML = `⚠️ Ready. You can save as PDF now:`;
+      saveBtn.style.background = '#eab308';
+      return;
+    }
+
+    statusText.innerHTML = `<span class="cd-spin"></span> Loading document pages... please wait`;
+    setTimeout(checkReadiness, 500);
+  }
+
+  function triggerSave() {
+    // Check for Google Drive's native print button first (best quality server-rendered PDF)
+    const nativePrint = document.querySelector('button[aria-label*="Print" i], div[aria-label*="Print" i], [data-tooltip*="Print" i], [role="button"][aria-label*="Print" i]');
+    if (nativePrint) {
+      statusText.innerHTML = `Opening Google Drive Print preview...`;
+      nativePrint.click();
+      setTimeout(() => banner.remove(), 2500);
+      return;
+    }
+
+    // Fallback: window.print()
+    banner.style.display = 'none';
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => {
+        banner.style.display = 'flex';
+      }, 1200);
+    }, 400);
+  }
+
+  saveBtn.addEventListener('click', triggerSave);
+
+  let countdownTimer = null;
+  function startCountdown() {
+    let secondsLeft = 3;
+    statusText.innerHTML = `<span style="color:#22c55e;">●</span> Loaded! Opening Print in ${secondsLeft}s... (<a href="#" id="cd-cancel-auto" style="color:#60a5fa;text-decoration:underline;">Cancel</a>)`;
+
+    banner.querySelector('#cd-cancel-auto')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      clearInterval(countdownTimer);
+      statusText.innerHTML = `<span style="color:#22c55e;">●</span> Ready. Click "Save as PDF" when ready.`;
+    });
+
+    countdownTimer = setInterval(() => {
+      secondsLeft--;
+      if (secondsLeft <= 0) {
+        clearInterval(countdownTimer);
+        triggerSave();
+      } else {
+        const cancelLink = banner.querySelector('#cd-cancel-auto');
+        if (cancelLink) {
+          statusText.innerHTML = `<span style="color:#22c55e;">●</span> Loaded! Opening Print in ${secondsLeft}s... (<a href="#" id="cd-cancel-auto" style="color:#60a5fa;text-decoration:underline;">Cancel</a>)`;
+          banner.querySelector('#cd-cancel-auto')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            clearInterval(countdownTimer);
+            statusText.innerHTML = `<span style="color:#22c55e;">●</span> Ready. Click "Save as PDF" when ready.`;
+          });
+        }
+      }
+    }, 1000);
+  }
+
+  setTimeout(checkReadiness, 600);
+}
+
+// --------------- Open & Print File as PDF (Smart Page Waiter) ---------------
 async function openAndPrintFileAsPdf(file, tabId) {
   const authuser = file.authuser || '0';
   let viewerUrl = file.url;
@@ -766,7 +986,7 @@ async function openAndPrintFileAsPdf(file, tabId) {
     }
   }
 
-  logMsg(tabId, 'info', `🚀 Opening file in new tab to Save as PDF (Ctrl+P): "${file.fileName}"`, { viewerUrl });
+  logMsg(tabId, 'info', `🚀 Opening file in new tab with Page Load Helper: "${file.fileName}"`, { viewerUrl });
 
   const newTab = await chrome.tabs.create({ url: viewerUrl, active: true });
 
@@ -774,48 +994,16 @@ async function openAndPrintFileAsPdf(file, tabId) {
     if (updatedTabId === newTab.id && changeInfo.status === 'complete') {
       chrome.tabs.onUpdated.removeListener(listener);
 
-      // Give Google Drive viewer a moment to initialize the document canvas
+      // Inject the smart Document Ready Helper into the tab
       setTimeout(() => {
         chrome.scripting.executeScript({
           target: { tabId: newTab.id },
-          func: (fileName) => {
-            const notice = document.createElement('div');
-            notice.style.cssText = `
-              position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
-              background: #1a73e8; color: #fff; padding: 12px 24px;
-              border-radius: 8px; font-family: Roboto, Arial, sans-serif;
-              font-size: 14px; font-weight: 500; z-index: 2147483647;
-              box-shadow: 0 4px 20px rgba(0,0,0,0.35); text-align: center;
-              transition: opacity 0.3s;
-            `;
-            notice.innerHTML = `<strong>Classroom Downloader</strong><br>Waiting for document to load...`;
-            document.body.appendChild(notice);
-
-            let checks = 0;
-            const pollReady = () => {
-              checks++;
-              const hasViewer = !!document.querySelector('canvas, iframe, [role="document"], .ndfHFb-c4YZDc, [role="main"]');
-              const isLoaded = document.readyState === 'complete' && (hasViewer || checks >= 6);
-
-              if (isLoaded || checks >= 8) {
-                notice.style.background = '#34a853';
-                notice.innerHTML = `<strong>Classroom Downloader</strong><br>File loaded! Opening Print to PDF (Ctrl+P)...`;
-                setTimeout(() => {
-                  notice.remove();
-                  window.print();
-                }, 600);
-              } else {
-                setTimeout(pollReady, 600);
-              }
-            };
-
-            setTimeout(pollReady, 800);
-          },
-          args: [file.fileName || 'file']
+          func: documentViewerHelperScript,
+          args: [true] // autoTrigger countdown once document is fully rendered
         }).catch(err => {
           console.warn('Script injection failed:', err);
         });
-      }, 1200);
+      }, 800);
     }
   };
 
