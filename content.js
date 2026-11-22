@@ -151,6 +151,8 @@
       displayLabel,
     };
 
+    console.log(`[CD Content] 👤 Session detected:`, JSON.stringify(cachedSessionUser, null, 2));
+
     return cachedSessionUser;
   }
 
@@ -609,13 +611,26 @@
       folderPath: buildFolderPath(context),
     };
 
+    console.group(`[CD Content] 🖱️ Download clicked: "${attachment.fileName}"`);
+    console.log('📋 File payload sent to background:', JSON.stringify(file, null, 2));
+    console.log('👤 Session user:', JSON.stringify(sessionUser, null, 2));
+    console.log('📂 Context:', JSON.stringify(context, null, 2));
+    console.groupEnd();
+
     chrome.runtime.sendMessage({
       action: 'downloadFile',
       file,
     }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error(`[CD Content] ❌ sendMessage error:`, chrome.runtime.lastError.message);
+        showToast(`Error: ${chrome.runtime.lastError.message}`, 'error');
+        return;
+      }
       if (response?.success) {
+        console.log(`[CD Content] ✅ Background accepted download for "${attachment.fileName}"`);
         showToast(`Downloading: ${attachment.fileName}`);
       } else {
+        console.error(`[CD Content] ❌ Background rejected download:`, response?.error);
         showToast(`Failed: ${response?.error || 'Unknown error'}`, 'error');
       }
     });
@@ -845,6 +860,8 @@
     let newCount = 0;
     const detectedThisPass = [];
 
+    console.log(`[CD Content] 🔍 Scanning page — found ${links.length} link elements to check`);
+
     links.forEach(link => {
       if (link.getAttribute(MARKER)) return;
 
@@ -878,8 +895,10 @@
     });
 
     if (newCount > 0) {
-      console.log(`[Classroom Downloader] ✅ Found ${newCount} new attachment(s) on page (Total detected: ${attachments.size}):`, detectedThisPass);
+      console.log(`[CD Content] ✅ Found ${newCount} new attachment(s) (Total: ${attachments.size}):`, detectedThisPass);
       updateFloatingBar();
+    } else {
+      console.log(`[CD Content] 🔍 Scan complete — no new attachments (Total: ${attachments.size})`);
     }
 
     return newCount;

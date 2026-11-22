@@ -67,7 +67,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         if (tabInfo?.sessionUser?.effectiveAuth) {
           sessionAuth = tabInfo.sessionUser.effectiveAuth;
         }
-      } catch {}
+      } catch { }
     }
 
     const fileInfo = parseLinkUrl(info.linkUrl);
@@ -325,7 +325,10 @@ async function fetchFileBlob(file) {
   const authuser = file.authuser !== undefined ? file.authuser : '0';
   let initialUrl = getDownloadUrl(file);
 
-  console.log(`[Classroom Downloader ServiceWorker] 🚀 Fetching for ZIP: "${file.fileName}"`, { url: initialUrl, authuser, type: file.type });
+  console.group(`[CD] 📦 fetchFileBlob: "${file.fileName}"`);
+  console.log(`🔗 URL: ${initialUrl}`);
+  console.log(`🔑 authuser: ${authuser}`);
+  console.log(`📄 type: ${file.type}, fileId: ${file.fileId}`);
 
   let response = await fetch(initialUrl, {
     credentials: 'include',
@@ -333,9 +336,11 @@ async function fetchFileBlob(file) {
   });
 
   let contentType = (response.headers.get('content-type') || '').toLowerCase();
-  console.log(`[Classroom Downloader ServiceWorker] 📥 Initial response: HTTP ${response.status}, Content-Type: ${contentType}`);
+  console.log(`📥 Response: HTTP ${response.status}, Content-Type: ${contentType}, Content-Length: ${response.headers.get('content-length') || 'unknown'}`);
 
   if (!response.ok && response.status !== 200) {
+    console.error(`❌ HTTP error: ${response.status} ${response.statusText}`);
+    console.groupEnd();
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
 
@@ -370,30 +375,40 @@ async function fetchFileBlob(file) {
     }
 
     if (confirmUrl) {
+      console.log(`[CD] 🔄 Confirm URL found, re-fetching: ${confirmUrl}`);
       response = await fetch(confirmUrl, {
         credentials: 'include',
         headers: { 'Accept': '*/*' },
       });
 
       contentType = (response.headers.get('content-type') || '').toLowerCase();
+      console.log(`[CD] 📥 Confirm response: HTTP ${response.status}, Content-Type: ${contentType}`);
       if (contentType.includes('text/html')) {
+        console.error(`[CD] ❌ Confirm response is still HTML — access denied`);
+        console.groupEnd();
         throw new Error('Access forbidden (403): Google returned an HTML login or permission error page.');
       }
     } else {
+      console.error(`[CD] ❌ No confirm URL found in HTML page`);
+      console.groupEnd();
       throw new Error('Access forbidden (403): Google returned an HTML page instead of file content.');
     }
   }
 
   const blob = await response.blob();
+  console.log(`[CD] ✅ Blob received: size=${blob.size}, type=${blob.type}`);
 
   // Validate that the binary is not an HTML error document disguised with a different mime-type
   if (blob.size < 4000) {
     const sample = await blob.slice(0, 100).text();
     if (sample.toLowerCase().includes('<!doctype html') || sample.toLowerCase().includes('<html')) {
+      console.error(`[CD] ❌ Small blob is actually HTML: "${sample.substring(0, 80)}..."`);
+      console.groupEnd();
       throw new Error('Access forbidden: Google returned an HTML login or error page.');
     }
   }
 
+  console.groupEnd();
   return blob;
 }
 
@@ -427,25 +442,37 @@ async function downloadFile(file, tabId) {
   const downloadIdKey = file.id || generateId();
   const downloadUrl = getDownloadUrl(file);
 
-  console.log(`[Classroom Downloader ServiceWorker] 💾 Processing download: "${fileName}" (ID: ${downloadIdKey})`, {
+  console.group(`[CD] 💾 Download: "${file.fileName}"`);
+  console.log('📋 Input file object:', JSON.stringify({
+    id: file.id,
     type: file.type,
     fileId: file.fileId,
+    fileName: file.fileName,
     authuser: file.authuser,
-    url: downloadUrl,
-  });
+    userEmail: file.userEmail,
+    folderPath: file.folderPath,
+    url: file.url,
+  }, null, 2));
+  console.log(`📝 Sanitized filename: "${fileName}"`);
+  console.log(`🔗 Download URL: ${downloadUrl}`);
+  console.log(`🔑 Auth: authuser=${file.authuser}, email=${file.userEmail || 'N/A'}`);
+  console.log(`📂 Tab ID: ${tabId || 'none'}`);
+  console.groupEnd();
 
   return new Promise((resolve, reject) => {
-    chrome.downloads.download(
-      {
-        url: downloadUrl,
-        filename: fileName,
-        conflictAction: 'uniquify',
-        saveAs: false,
-      },
-      (downloadId) => {
+    const downloadOpts = {
+      url: downloadUrl,
+      filename: fileName,
+      conflictAction: 'uniquify',
+      saveAs: false,
+    };
+    console.log(`[CD] 📥 chrome.downloads.download() called with:`, JSON.stringify(downloadOpts, null, 2));
+
+    chrome.downloads.download(downloadOpts, (downloadId) => {
         if (chrome.runtime.lastError) {
           const errorMsg = chrome.runtime.lastError.message;
-          console.error(`[Classroom Downloader ServiceWorker] ❌ chrome.downloads.download error:`, errorMsg);
+          console.error(`[CD] ❌ chrome.downloads.download FAILED:`, errorMsg);
+          console.error(`[CD] ❌ Failed filename was: "${fileName}" | URL: ${downloadUrl}`);
           addToHistory({
             id: downloadIdKey,
             fileName: file.fileName,
@@ -461,16 +488,18 @@ async function downloadFile(file, tabId) {
           return;
         }
 
-        console.log(`[Classroom Downloader ServiceWorker] ✅ Download initiated (ID: ${downloadId})`);
+        console.log(`[CD] ✅ Download started — Chrome download ID: ${downloadId}`);
 
         // Watch for completion or HTML error page detection
         const onChangedListener = (delta) => {
           if (delta.id !== downloadId) return;
 
+          console.log(`[CD] 🔄 Download ${downloadId} state change:`, JSON.stringify(delta));
+
           if (delta.error) {
             chrome.downloads.onChanged.removeListener(onChangedListener);
             const err = delta.error.current;
-            console.error(`[Classroom Downloader ServiceWorker] Download error:`, err);
+            console.error(`[CD] ❌ Download ${downloadId} error event:`, err);
             addToHistory({
               id: downloadIdKey,
               fileName: file.fileName,
@@ -485,17 +514,30 @@ async function downloadFile(file, tabId) {
             reject(new Error(`Download failed: ${err}`));
           } else if (delta.state && delta.state.current === 'complete') {
             chrome.downloads.onChanged.removeListener(onChangedListener);
+            console.log(`[CD] ✅ Download ${downloadId} completed, verifying MIME type...`);
 
             // Verify MIME type to ensure it isn't an HTML error/login page
             chrome.downloads.search({ id: downloadId }, (items) => {
               const item = items && items[0];
               const mime = (item?.mime || '').toLowerCase();
+              const fileSize = item?.fileSize || item?.totalBytes || 'unknown';
+              const finalUrl = item?.finalUrl || 'unknown';
+              const savedPath = item?.filename || 'unknown';
               const isHtml = mime.includes('text/html');
 
+              console.log(`[CD] 📊 Download ${downloadId} result:`, {
+                mime,
+                fileSize,
+                finalUrl,
+                savedPath,
+                isHtml,
+              });
+
               if (isHtml && !fileName.endsWith('.html') && !fileName.endsWith('.htm')) {
-                console.warn(`[Classroom Downloader] Downloaded file is HTML (auth/permission failure), removing invalid file.`);
+                console.warn(`[CD] ⚠️ Download ${downloadId}: File is HTML (auth/permission failure) — erasing invalid file`);
+                console.warn(`[CD] ⚠️ Expected a binary file but got text/html. Auth may be wrong. authuser=${file.authuser}`);
                 chrome.downloads.erase({ id: downloadId });
-                const errorMsg = `Access Forbidden (403): Google returned an HTML page. Please verify your account authorization (/u/${file.authuser || '0'}/).`;
+                const errorMsg = `Access Forbidden (403): Google returned an HTML page instead of the file. authuser=${file.authuser}. Verify you're logged into the correct account (/u/${file.authuser || '0'}/).`;
                 addToHistory({
                   id: downloadIdKey,
                   fileName: file.fileName,
@@ -509,6 +551,7 @@ async function downloadFile(file, tabId) {
                 });
                 reject(new Error(errorMsg));
               } else {
+                console.log(`[CD] ✅ Download ${downloadId} verified OK — MIME: ${mime}, Size: ${fileSize}`);
                 addToHistory({
                   id: downloadIdKey,
                   fileName: file.fileName,
@@ -531,6 +574,7 @@ async function downloadFile(file, tabId) {
         // Fallback timeout to unregister listener after 30s
         setTimeout(() => {
           chrome.downloads.onChanged.removeListener(onChangedListener);
+          console.warn(`[CD] ⏱️ Download ${downloadId} timed out after 30s — resolving anyway`);
           resolve({ downloadId });
         }, 30000);
       }
@@ -547,11 +591,13 @@ function getDownloadUrl(file) {
 
   // Apply manual user override if configured in Settings
   if (settings.authOverride && settings.authOverride !== 'auto') {
+    console.log(`[CD] 🔑 getDownloadUrl: authOverride active, switching from "${auth}" to "${settings.authOverride}"`);
     auth = settings.authOverride;
   }
 
   const isEmail = typeof auth === 'string' && auth.includes('@');
   const authParam = encodeURIComponent(auth);
+  console.log(`[CD] 🔗 getDownloadUrl: type=${file.type}, fileId=${file.fileId}, auth=${auth}, isEmail=${isEmail}`);
 
   switch (file.type) {
     case 'drive':
@@ -585,17 +631,24 @@ function getDownloadUrl(file) {
 
 function buildFileName(file) {
   const settings = state.settings || DEFAULT_SETTINGS;
-  let name = sanitizeFileName(file.fileName || 'untitled');
+  const rawName = file.fileName || 'untitled';
+  let name = sanitizeFileName(rawName);
+
+  console.log(`[CD] 🏗️ buildFileName: raw="${rawName}" → sanitized="${name}" (type=${file.type})`);
 
   // Add extension if missing for exported Google Workspace files
   if (file.type === 'doc' && !name.match(/\.(pdf|docx|odt|rtf|txt|html|epub)$/i)) {
     name += '.' + (settings.docExportFormat || 'pdf');
+    console.log(`[CD] 🏗️ buildFileName: added doc extension → "${name}"`);
   } else if (file.type === 'sheet' && !name.match(/\.(xlsx|csv|pdf|ods|tsv)$/i)) {
     name += '.' + (settings.sheetExportFormat || 'xlsx');
+    console.log(`[CD] 🏗️ buildFileName: added sheet extension → "${name}"`);
   } else if (file.type === 'slide' && !name.match(/\.(pptx|pdf|odp)$/i)) {
     name += '.' + (settings.slideExportFormat || 'pptx');
+    console.log(`[CD] 🏗️ buildFileName: added slide extension → "${name}"`);
   } else if (file.type === 'drawing' && !name.match(/\.(png|svg|pdf|jpg|jpeg)$/i)) {
     name += '.png';
+    console.log(`[CD] 🏗️ buildFileName: added drawing extension → "${name}"`);
   }
 
   // For drive files without any extension, don't add one (Chrome will get it from Content-Disposition)
@@ -619,9 +672,12 @@ function buildFileName(file) {
   // Build folder path if requested
   if (settings.preserveFolders && file.folderPath) {
     const folderPath = sanitizePath(file.folderPath);
-    return folderPath ? folderPath + '/' + name : name;
+    const fullPath = folderPath ? folderPath + '/' + name : name;
+    console.log(`[CD] 🏗️ buildFileName: final path="${fullPath}" (preserveFolders=true, folder="${file.folderPath}")`);
+    return fullPath;
   }
 
+  console.log(`[CD] 🏗️ buildFileName: final="${name}"`);
   return name;
 }
 
@@ -836,7 +892,7 @@ function extractAuthUserFromUrl(url) {
     if (q) return q;
     const m = u.pathname.match(/\/u\/(\d+)\//);
     if (m) return m[1];
-  } catch {}
+  } catch { }
   return '0';
 }
 
@@ -858,6 +914,9 @@ function sanitizeFileName(name) {
     .trim()
     .replace(/[.\s]+$/, '');                    // Strip trailing dots & spaces (Windows rejects these)
   // If name is empty after sanitization, use fallback
+  if (!clean) {
+    console.warn(`[CD] ⚠️ sanitizeFileName: "${name}" became empty after sanitization, using "untitled"`);
+  }
   return clean || 'untitled';
 }
 
@@ -882,7 +941,7 @@ function notifyProgress(tabId, progress) {
     chrome.tabs.sendMessage(tabId, {
       action: 'downloadProgress',
       progress,
-    }).catch(() => {});
+    }).catch(() => { });
   }
 }
 
