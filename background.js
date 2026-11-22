@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   showNotifications: true,
   maxConcurrent: 3,
   theme: 'system',                 // light | dark | system
+  authOverride: 'auto',            // 'auto' | custom index or email
 };
 
 // --------------- Initialization ---------------
@@ -39,7 +40,7 @@ chrome.runtime.onInstalled.addListener(() => {
       chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
       state.settings = DEFAULT_SETTINGS;
     } else {
-      state.settings = data.settings;
+      state.settings = { ...DEFAULT_SETTINGS, ...data.settings };
     }
   });
 
@@ -51,22 +52,35 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Load settings on startup
 chrome.storage.local.get(['settings', 'downloadHistory'], (data) => {
-  state.settings = data.settings || DEFAULT_SETTINGS;
+  state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
   state.downloadHistory = data.downloadHistory || [];
   state.maxConcurrent = state.settings.maxConcurrent || 3;
 });
 
 // --------------- Context Menu ---------------
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'classroom-download' && info.linkUrl) {
+    let sessionAuth = '0';
+    if (tab?.id) {
+      try {
+        const tabInfo = await chrome.tabs.sendMessage(tab.id, { action: 'getPageInfo' });
+        if (tabInfo?.sessionUser?.effectiveAuth) {
+          sessionAuth = tabInfo.sessionUser.effectiveAuth;
+        }
+      } catch {}
+    }
+
     const fileInfo = parseLinkUrl(info.linkUrl);
     const targetFile = fileInfo || {
       url: info.linkUrl,
       fileName: extractFileNameFromUrl(info.linkUrl),
       type: 'direct',
       id: generateId(),
-      authuser: '0',
+      authuser: sessionAuth,
     };
+    if (fileInfo) {
+      fileInfo.authuser = sessionAuth;
+    }
     downloadFile(targetFile, tab?.id).catch(err => {
       console.error('Context menu download failed:', err);
     });
@@ -529,23 +543,39 @@ function getDownloadUrl(file) {
   if (!file) return '';
 
   const settings = state.settings || DEFAULT_SETTINGS;
-  const auth = file.authuser !== undefined ? file.authuser : '0';
+  let auth = file.authuser !== undefined && file.authuser !== '' ? file.authuser : '0';
+
+  // Apply manual user override if configured in Settings
+  if (settings.authOverride && settings.authOverride !== 'auto') {
+    auth = settings.authOverride;
+  }
+
+  const isEmail = typeof auth === 'string' && auth.includes('@');
+  const authParam = encodeURIComponent(auth);
 
   switch (file.type) {
     case 'drive':
-      return `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${auth}&confirm=t`;
+      return `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`;
 
     case 'doc':
-      return `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}`;
+      return isEmail
+        ? `https://docs.google.com/document/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}&authuser=${authParam}`
+        : `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=${settings.docExportFormat || 'pdf'}`;
 
     case 'sheet':
-      return `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}`;
+      return isEmail
+        ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}&authuser=${authParam}`
+        : `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=${settings.sheetExportFormat || 'xlsx'}`;
 
     case 'slide':
-      return `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}`;
+      return isEmail
+        ? `https://docs.google.com/presentation/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}?authuser=${authParam}`
+        : `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/${settings.slideExportFormat || 'pptx'}`;
 
     case 'drawing':
-      return `https://docs.google.com/drawings/u/${auth}/d/${file.fileId}/export/png`;
+      return isEmail
+        ? `https://docs.google.com/drawings/d/${file.fileId}/export/png?authuser=${authParam}`
+        : `https://docs.google.com/drawings/u/${auth}/d/${file.fileId}/export/png`;
 
     case 'direct':
     default:

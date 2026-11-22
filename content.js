@@ -45,16 +45,119 @@
   let progressOverlay = null;
   let pageInfo = { type: 'unknown', courseName: '', topicName: '', assignmentName: '' };
 
+  // --------------- Classroom Session User Detection ---------------
+  let cachedSessionUser = null;
+
+  function getClassroomSessionUser() {
+    let email = '';
+    let name = '';
+    let authIndex = '';
+
+    // 1. Check window.location pathname for /u/X/
+    const uMatch = window.location.pathname.match(/\/u\/(\d+)\//);
+    if (uMatch) {
+      authIndex = uMatch[1];
+    }
+
+    // 2. Check window.location search params for authuser
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const q = sp.get('authuser');
+      if (q) {
+        if (q.includes('@')) email = q;
+        else if (/^\d+$/.test(q)) authIndex = q;
+      }
+    } catch {}
+
+    // 3. Inspect top-right Google Account button in the OneGoogleBar
+    const accountSelectors = [
+      'a[href*="SignOutOptions"]',
+      'a[aria-label*="Google Account"]',
+      'button[aria-label*="Google Account"]',
+      '[role="button"][aria-label*="Google Account"]',
+      'a[aria-label*="@"]',
+      'button[aria-label*="@"]',
+      '[aria-label*="@"]',
+      '.gb_d[aria-label]',
+      'img.gb_Aa',
+      'img[aria-label*="@"]',
+      'div[aria-label*="Google Account"]',
+    ];
+
+    for (const sel of accountSelectors) {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        const text = (el.getAttribute('aria-label') || el.title || el.getAttribute('alt') || el.textContent || '');
+        const emailMatch = text.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+        if (emailMatch) {
+          email = emailMatch[1];
+          const nameMatch = text.match(/Google Account:\s*([^(<\n\r]+)/i);
+          if (nameMatch) name = nameMatch[1].trim();
+          break;
+        }
+
+        // Check if the link itself carries authuser parameter
+        if (el.href) {
+          try {
+            const u = new URL(el.href);
+            const au = u.searchParams.get('authuser');
+            if (au) {
+              if (au.includes('@')) email = email || au;
+              else if (/^\d+$/.test(au)) authIndex = authIndex || au;
+            }
+          } catch {}
+        }
+      }
+      if (email) break;
+    }
+
+    // 4. Scan inline script tags for user email if not yet found
+    if (!email) {
+      try {
+        const scripts = document.querySelectorAll('script:not([src])');
+        for (const s of scripts) {
+          const t = s.textContent || '';
+          if (t.includes('@') && (t.includes('WIZ_global_data') || t.includes('IJ_values') || t.includes('user_email') || t.includes('SESSION_INDEX'))) {
+            const m = t.match(/"([a-zA-Z0-9._%+-]+@(?!google\.com|googlemail\.com|gstatic\.com)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"/);
+            if (m) {
+              email = m[1];
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Determine effective authuser parameter:
+    // Email is the most authoritative and unambiguous identifier for Google Drive & Docs.
+    // If email is not found, use the numeric authIndex (/u/X/).
+    // Default to '0' only if neither was discovered.
+    const effectiveAuth = email || (authIndex ? authIndex : '0');
+
+    let displayLabel = '';
+    if (email) {
+      displayLabel = name ? `${name} (${email})` : email;
+    } else if (authIndex) {
+      displayLabel = `Account ${authIndex}`;
+    } else {
+      displayLabel = 'Default Account (0)';
+    }
+
+    cachedSessionUser = {
+      email,
+      name,
+      authIndex: authIndex || '0',
+      effectiveAuth,
+      displayLabel,
+    };
+
+    return cachedSessionUser;
+  }
+
   // --------------- Auth User ---------------
   function getAuthUser() {
-    try {
-      const uMatch = window.location.pathname.match(/\/u\/(\d+)\//);
-      if (uMatch) return uMatch[1];
-      const params = new URLSearchParams(window.location.search);
-      const qAuth = params.get('authuser');
-      if (qAuth) return qAuth;
-    } catch {}
-    return '0';
+    const session = getClassroomSessionUser();
+    return session.effectiveAuth;
   }
 
   // --------------- Page Detection ---------------
@@ -152,15 +255,9 @@
       return null;
     }
 
-    // Determine authuser
-    let authuser = getAuthUser();
-    try {
-      const uObj = new URL(href.startsWith('http') ? href : 'https://' + href);
-      const q = uObj.searchParams.get('authuser');
-      if (q) authuser = q;
-      const m = uObj.pathname.match(/\/u\/(\d+)\//);
-      if (m) authuser = m[1];
-    } catch {}
+    // Determine authuser strictly from the active Google Classroom session
+    const sessionUser = getClassroomSessionUser();
+    const authuser = sessionUser.effectiveAuth;
 
     const fileName = extractFileName(linkEl, type);
     const id = fileId || generateId();
@@ -172,6 +269,7 @@
       url: href,
       fileName,
       authuser,
+      userEmail: sessionUser.email,
       linkElement: linkEl,
     };
   }
@@ -497,6 +595,7 @@
   }
 
   function downloadSingleFile(attachment) {
+    const sessionUser = getClassroomSessionUser();
     const context = getAttachmentContext(attachment.linkElement);
     const file = {
       id: attachment.id,
@@ -504,7 +603,8 @@
       fileId: attachment.fileId,
       url: attachment.url,
       fileName: attachment.fileName,
-      authuser: attachment.authuser || getAuthUser(),
+      authuser: attachment.authuser || sessionUser.effectiveAuth,
+      userEmail: sessionUser.email,
       folderPath: buildFolderPath(context),
     };
 
@@ -618,6 +718,7 @@
 
   // --------------- Helpers ---------------
   function getSelectedFiles() {
+    const sessionUser = getClassroomSessionUser();
     const files = [];
     for (const id of selectedFiles) {
       const att = attachments.get(id);
@@ -629,7 +730,8 @@
           fileId: att.fileId,
           url: att.url,
           fileName: att.fileName,
-          authuser: att.authuser || getAuthUser(),
+          authuser: att.authuser || sessionUser.effectiveAuth,
+          userEmail: sessionUser.email,
           folderPath: buildFolderPath(context),
           assignmentName: context.assignmentName,
           topicName: context.topicName,
@@ -641,6 +743,7 @@
   }
 
   function getAllFiles() {
+    const sessionUser = getClassroomSessionUser();
     const files = [];
     attachments.forEach((att, id) => {
       const context = getAttachmentContext(att.linkElement);
@@ -650,7 +753,8 @@
         fileId: att.fileId,
         url: att.url,
         fileName: att.fileName,
-        authuser: att.authuser || getAuthUser(),
+        authuser: att.authuser || sessionUser.effectiveAuth,
+        userEmail: sessionUser.email,
         folderPath: buildFolderPath(context),
         assignmentName: context.assignmentName,
         topicName: context.topicName,
@@ -845,9 +949,11 @@
 
         case 'getPageInfo':
           detectPageType();
+          const sessionUser = getClassroomSessionUser();
           scanForAttachments();
           sendResponse({
             pageInfo,
+            sessionUser,
             attachmentCount: attachments.size,
             selectedCount: selectedFiles.size,
             attachments: getAllFiles(),

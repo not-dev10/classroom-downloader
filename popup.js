@@ -13,6 +13,7 @@
     courseName: $('#courseName'),
     courseChip: $('#courseChip'),
     pageType: $('#pageType'),
+    accountName: $('#accountName'),
     classroomContent: $('#classroomContent'),
     notClassroom: $('#notClassroom'),
     homeNotice: $('#homeNotice'),
@@ -98,12 +99,18 @@
   }
 
   function updateView(data) {
-    const { pageInfo, attachmentCount, selectedCount, attachments } = data;
+    const { pageInfo, sessionUser, attachmentCount, selectedCount, attachments } = data;
 
     // Course info
     const name = pageInfo?.courseName || 'Google Classroom';
     elements.courseName.textContent = name;
     elements.courseChip.textContent = name.length > 18 ? name.substring(0, 16) + '...' : name;
+
+    // Account info
+    if (sessionUser && elements.accountName) {
+      elements.accountName.textContent = sessionUser.displayLabel || sessionUser.email || `Account ${sessionUser.authIndex}`;
+      elements.accountName.title = `Authenticated session: ${sessionUser.email || sessionUser.authIndex}`;
+    }
 
     currentPageType = pageInfo?.type || 'unknown';
     const pageTypes = {
@@ -513,6 +520,9 @@
       if (settings.maxConcurrent) $('#settingConcurrent').value = settings.maxConcurrent.toString();
       if (settings.preserveFolders !== undefined) $('#settingFolders').checked = settings.preserveFolders;
       if (settings.showNotifications !== undefined) $('#settingNotifications').checked = settings.showNotifications;
+      if (settings.authOverride && settings.authOverride !== 'auto') {
+        $('#settingAuthOverride').value = settings.authOverride;
+      }
       if (settings.theme) {
         $('#settingTheme').value = settings.theme;
         applyTheme(settings.theme);
@@ -529,6 +539,7 @@
       maxConcurrent: parseInt($('#settingConcurrent').value, 10),
       preserveFolders: $('#settingFolders').checked,
       showNotifications: $('#settingNotifications').checked,
+      authOverride: $('#settingAuthOverride').value.trim() || 'auto',
       theme: $('#settingTheme').value,
     };
 

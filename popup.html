@@ -47,6 +47,11 @@
             <span class="cd-badge cd-badge-type" id="pageType">Classwork</span>
           </div>
         </div>
+        <div class="cd-account-row" id="accountRow">
+          <span class="cd-account-icon">👤</span>
+          <span class="cd-account-label">Active Session:</span>
+          <span class="cd-account-name" id="accountName" title="Logged-in Google Classroom session account">Detecting account...</span>
+        </div>
       </section>
 
       <!-- Classroom Home Notice (Shown if user is on /u/1/ or /u/1/h) -->
@@ -200,6 +205,11 @@
               <input type="checkbox" id="settingNotifications" checked>
               Show download notifications
             </label>
+          </div>
+          <div class="cd-setting">
+            <label class="cd-setting-label">Account for downloads</label>
+            <input type="text" class="cd-input" id="settingAuthOverride" placeholder="Auto-detect from Classroom" />
+            <span class="cd-setting-desc">Auto-detects active Classroom session. Leave empty or enter custom index (0, 1) or email.</span>
           </div>
           <div class="cd-setting">
             <label class="cd-setting-label">Theme</label>
