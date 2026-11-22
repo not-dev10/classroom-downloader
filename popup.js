@@ -385,27 +385,20 @@
     btn.disabled = true;
 
     try {
-      const isNativeGoogleDoc = file.type === 'doc' || file.type === 'slide' || file.type === 'sheet';
-      const isAlreadyPdf = (file.fileName || '').toLowerCase().endsWith('.pdf');
+      // 1. First attempt: Direct silent PDF download/export (no new tabs, no print dialogs)
+      const response = await chrome.runtime.sendMessage({
+        action: 'downloadFileAsPdf',
+        file,
+        tabId: currentTabId,
+      });
 
-      if (isNativeGoogleDoc || isAlreadyPdf) {
-        // Direct export to PDF via Google's official PDF endpoint
-        const response = await chrome.runtime.sendMessage({
-          action: 'downloadFileAsPdf',
-          file,
-          tabId: currentTabId,
-        });
-        if (response?.success) {
-          btn.textContent = '✓';
-          btn.style.color = 'var(--cd-success)';
-          loadHistory();
-        } else {
-          btn.textContent = '✗';
-          btn.style.color = 'var(--cd-error)';
-        }
+      if (response?.success) {
+        btn.textContent = '✓';
+        btn.style.color = 'var(--cd-success)';
+        loadHistory();
       } else {
-        // For Drive files (e.g. PPTX, DOCX, view-only files):
-        // Open in tab, wait for file viewer to load, then trigger Print to PDF (Ctrl+P)!
+        // 2. Fallback: If Google blocks direct conversion (e.g. view-only file), open viewer to print
+        console.warn('Direct PDF export failed, trying viewer print fallback:', response?.error);
         await chrome.runtime.sendMessage({
           action: 'openAndPrintFileAsPdf',
           file,

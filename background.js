@@ -841,6 +841,28 @@ function getDownloadUrl(file) {
 
   switch (file.type) {
     case 'drive':
+      if (file.forcePdf && file.fileId) {
+        const fn = (file.fileName || '').toLowerCase();
+        const isPpt = file.detectedExt === 'pptx' || file.detectedExt === 'ppt' || fn.endsWith('.pptx') || fn.endsWith('.ppt');
+        const isWord = file.detectedExt === 'docx' || file.detectedExt === 'doc' || fn.endsWith('.docx') || fn.endsWith('.doc');
+        const isSheet = file.detectedExt === 'xlsx' || file.detectedExt === 'xls' || file.detectedExt === 'csv' || fn.endsWith('.xlsx') || fn.endsWith('.csv');
+
+        if (isPpt) {
+          return isEmail
+            ? `https://docs.google.com/presentation/d/${file.fileId}/export/pdf?authuser=${authParam}`
+            : `https://docs.google.com/presentation/u/${auth}/d/${file.fileId}/export/pdf`;
+        }
+        if (isWord) {
+          return isEmail
+            ? `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
+            : `https://docs.google.com/document/u/${auth}/d/${file.fileId}/export?format=pdf`;
+        }
+        if (isSheet) {
+          return isEmail
+            ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
+            : `https://docs.google.com/spreadsheets/u/${auth}/d/${file.fileId}/export?format=pdf`;
+        }
+      }
       return `https://drive.usercontent.google.com/download?id=${file.fileId}&export=download&authuser=${authParam}&confirm=t`;
 
     case 'doc':

@@ -490,38 +490,40 @@
 
   function openAndPrintSingleFileAsPdf(attachment) {
     const sessionUser = getClassroomSessionUser();
-    const isDoc = attachment.type === 'doc' || attachment.type === 'slide' || attachment.type === 'sheet';
-    const isPdf = (attachment.fileName || '').toLowerCase().endsWith('.pdf');
-
-    if (isDoc || isPdf) {
-      showToast(`Exporting ${attachment.fileName} as PDF...`);
-      chrome.runtime.sendMessage({
-        action: 'downloadFileAsPdf',
-        file: {
-          id: attachment.id,
-          type: attachment.type,
-          fileId: attachment.fileId,
-          url: attachment.url,
-          fileName: attachment.fileName,
-          authuser: attachment.authuser || sessionUser.effectiveAuth,
-          userEmail: sessionUser.email,
-        }
-      });
-    } else {
-      showToast(`Opening ${attachment.fileName} in tab to Save as PDF (Ctrl+P)...`);
-      chrome.runtime.sendMessage({
-        action: 'openAndPrintFileAsPdf',
-        file: {
-          id: attachment.id,
-          type: attachment.type,
-          fileId: attachment.fileId,
-          url: attachment.url,
-          fileName: attachment.fileName,
-          authuser: attachment.authuser || sessionUser.effectiveAuth,
-          userEmail: sessionUser.email,
-        }
-      });
-    }
+    showToast(`Converting & downloading ${attachment.fileName} as PDF...`);
+    chrome.runtime.sendMessage({
+      action: 'downloadFileAsPdf',
+      file: {
+        id: attachment.id,
+        type: attachment.type,
+        fileId: attachment.fileId,
+        url: attachment.url,
+        fileName: attachment.fileName,
+        detectedExt: attachment.detectedExt,
+        authuser: attachment.authuser || sessionUser.effectiveAuth,
+        userEmail: sessionUser.email,
+      }
+    }, (response) => {
+      if (response?.success) {
+        showToast(`Saved as PDF: ${attachment.fileName}`, 'success');
+      } else {
+        // Fallback: If Google blocks direct conversion, open viewer to print
+        showToast(`Opening viewer to Save as PDF...`, 'info');
+        chrome.runtime.sendMessage({
+          action: 'openAndPrintFileAsPdf',
+          file: {
+            id: attachment.id,
+            type: attachment.type,
+            fileId: attachment.fileId,
+            url: attachment.url,
+            fileName: attachment.fileName,
+            detectedExt: attachment.detectedExt,
+            authuser: attachment.authuser || sessionUser.effectiveAuth,
+            userEmail: sessionUser.email,
+          }
+        });
+      }
+    });
   }
 
   // --------------- Floating Action Bar ---------------
@@ -913,6 +915,28 @@
     const isEmail = typeof authuser === 'string' && authuser.includes('@');
     const authParam = encodeURIComponent(authuser);
     let urlsToTry = [];
+
+    if (file.forcePdf && file.fileId) {
+      // Prioritize direct PDF export endpoints for Google Docs, Slides, Sheets, and Drive Office files
+      const fn = (file.fileName || '').toLowerCase();
+      const isPpt = file.type === 'slide' || file.detectedExt === 'pptx' || file.detectedExt === 'ppt' || fn.endsWith('.pptx') || fn.endsWith('.ppt');
+      const isWord = file.type === 'doc' || file.detectedExt === 'docx' || file.detectedExt === 'doc' || fn.endsWith('.docx') || fn.endsWith('.doc');
+      const isSheet = file.type === 'sheet' || file.detectedExt === 'xlsx' || file.detectedExt === 'xls' || file.detectedExt === 'csv' || fn.endsWith('.xlsx') || fn.endsWith('.csv');
+
+      if (isPpt) {
+        urlsToTry.push(isEmail
+          ? `https://docs.google.com/presentation/d/${file.fileId}/export/pdf?authuser=${authParam}`
+          : `https://docs.google.com/presentation/u/${authuser}/d/${file.fileId}/export/pdf`);
+      } else if (isWord) {
+        urlsToTry.push(isEmail
+          ? `https://docs.google.com/document/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
+          : `https://docs.google.com/document/u/${authuser}/d/${file.fileId}/export?format=pdf`);
+      } else if (isSheet) {
+        urlsToTry.push(isEmail
+          ? `https://docs.google.com/spreadsheets/d/${file.fileId}/export?format=pdf&authuser=${authParam}`
+          : `https://docs.google.com/spreadsheets/u/${authuser}/d/${file.fileId}/export?format=pdf`);
+      }
+    }
 
     if (file.type === 'drive' && file.fileId) {
       // 1. Google Drive canonical multi-account export path (handles session auth best)
